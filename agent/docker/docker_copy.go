@@ -1,0 +1,174 @@
+package docker
+
+import (
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strconv"
+	"strings"
+
+	"github.com/portainer/agent"
+	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/api/filesystem"
+	"github.com/portainer/portainer/api/logs"
+	"github.com/portainer/portainer/pkg/fips"
+	"github.com/portainer/portainer/pkg/librand"
+
+	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/image"
+	"github.com/docker/docker/api/types/registry"
+	"github.com/pkg/errors"
+	"github.com/rs/zerolog/log"
+)
+
+// CopyGitStackToHost copies src folder to the dst folder on the host
+func CopyGitStackToHost(src, dst string, stackID int, stackName string, registryCredentials []edge.RegistryCredentials) error {
+	return removeAndCopy(src, dst, stackID, stackName, registryCredentials, true)
+}
+
+// RemoveGitStackFromHost removes the copy of src folder on the host
+func RemoveGitStackFromHost(src, dst string, stackID int, stackName string, registryCredentials []edge.RegistryCredentials) error {
+	return removeAndCopy(src, dst, stackID, stackName, registryCredentials, false)
+}
+
+func buildRemoveDirCmd(src, dst string, fips bool) []string {
+	var cmd []string
+	if fips {
+		cmd = append(cmd, "--fips-mode")
+	}
+
+	gitStackPath := filesystem.JoinPaths(dst, filepath.Base(src))
+	cmd = append(cmd, []string{"remove-dir", gitStackPath}...)
+
+	return cmd
+}
+
+// removeAndCopy removes the copy of src folder on the host,
+// then copies src folder to the dst folder on the host
+func removeAndCopy(src, dst string, stackID int, stackName string, registryCredentials []edge.RegistryCredentials, needCopy bool) error {
+	if err := pullUnpackerImage(registryCredentials); err != nil {
+		return err
+	}
+
+	fips := fips.FIPSMode()
+
+	removeDirCmd := buildRemoveDirCmd(src, dst, fips)
+
+	unpackerContainer, err := createUnpackerContainer(stackID, stackName, dst, removeDirCmd, fips)
+	if err != nil {
+		return err
+	}
+
+	defer removeUnpackerContainer(unpackerContainer)
+
+	if err := ContainerStart(unpackerContainer.ID, container.StartOptions{}); err != nil {
+		return err
+	}
+
+	statusCh, errCh := ContainerWait(unpackerContainer.ID, container.WaitConditionNotRunning)
+	select {
+	case err := <-errCh:
+		if err != nil {
+			return err
+		}
+	case <-statusCh:
+	}
+
+	if needCopy {
+		return CopyToContainer(unpackerContainer.ID, dst, src)
+	}
+
+	return nil
+}
+
+func removeUnpackerContainer(unpackerContainer container.CreateResponse) {
+	if err := ContainerDelete(unpackerContainer.ID, container.RemoveOptions{}); err != nil {
+		log.Error().
+			Str("ContainerID", unpackerContainer.ID).
+			Msg("Failed to remove unpacker container")
+	}
+}
+
+func getUnpackerImage() string {
+	if image := os.Getenv(agent.ComposeUnpackerImageEnvVar); image != "" {
+		return image
+	}
+
+	return agent.DefaultUnpackerImage
+}
+
+func pullUnpackerImage(registryCredentials []edge.RegistryCredentials) error {
+	unpackerImg := getUnpackerImage()
+
+	reader, err := ImagePull(unpackerImg, image.PullOptions{
+		RegistryAuth: unpackerImageRegistryAuth(unpackerImg, registryCredentials),
+	})
+	if err != nil {
+		return errors.Wrap(err, "unable to pull unpacker image")
+	}
+
+	defer logs.CloseAndLogErr(reader)
+	_, _ = io.Copy(io.Discard, reader)
+
+	return nil
+}
+
+func unpackerImageRegistryAuth(unpackerImg string, registryCredentials []edge.RegistryCredentials) string {
+	for _, cred := range registryCredentials {
+		if cred.ServerURL == "" || !strings.Contains(unpackerImg, cred.ServerURL) {
+			continue
+		}
+
+		auth, err := registry.EncodeAuthConfig(registry.AuthConfig{
+			Username:      cred.Username,
+			Password:      cred.Secret,
+			ServerAddress: cred.ServerURL,
+		})
+		if err != nil {
+			log.Debug().
+				Err(err).
+				Str("image", unpackerImg).
+				Msg("failed to encode registry auth for the unpacker image, pulling without registry auth")
+
+			return ""
+		}
+
+		return auth
+	}
+
+	return ""
+}
+
+func createContainerConfig(cmd []string, fips bool) *container.Config {
+	image := getUnpackerImage()
+
+	containerConfig := &container.Config{
+		Image: image,
+		Cmd:   cmd,
+	}
+
+	if fips {
+		containerConfig.Env = []string{"GODEBUG=fips140=on"}
+	}
+
+	return containerConfig
+}
+
+func createUnpackerContainer(stackID int, stackName, composeDestination string, cmd []string, fips bool) (container.CreateResponse, error) {
+	containerName := "portainer-unpacker-" + strconv.Itoa(stackID) + "-" + stackName + "-" + strconv.Itoa(librand.Intn(100))
+
+	containerConfig := createContainerConfig(cmd, fips)
+
+	return ContainerCreate(
+		containerConfig,
+		&container.HostConfig{
+			Binds: []string{
+				fmt.Sprintf("%s:%s", composeDestination, composeDestination),
+			},
+		},
+		nil,
+		nil,
+		containerName,
+	)
+}

@@ -1,0 +1,134 @@
+package client
+
+import (
+	"time"
+
+	portainer "github.com/portainer/portainer/api"
+	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/api/filesystem"
+	pkgmetrics "github.com/portainer/portainer/pkg/metrics"
+
+	"github.com/portainer/agent"
+)
+
+const (
+	EdgeConfigIdleState EdgeConfigStateType = iota
+	EdgeConfigFailureState
+	EdgeConfigSavingState
+	EdgeConfigDeletingState
+	EdgeConfigUpdatingState
+)
+
+type PortainerClient interface {
+	GetEnvironmentID() (portainer.EndpointID, error)
+	GetEnvironmentStatus(flags ...string) (*PollStatusResponse, error)
+	GetEdgeStackConfig(edgeStackID int, version *int) (*edge.StackPayload, error)
+	SetEdgeStackStatus(edgeStackID, version int, edgeStackStatus portainer.EdgeStackStatusType, rollbackTo *int, errMessage string) error
+	SetEdgeJobStatus(edgeJobStatus agent.EdgeJobStatus) error
+	GetEdgeConfig(id EdgeConfigID) (*EdgeConfig, error)
+	SetEdgeConfigState(id EdgeConfigID, state EdgeConfigStateType) error
+	SetTimeout(t time.Duration)
+	SetLastCommandTimestamp(timestamp time.Time)
+	EnqueueLogCollectionForStack(logCmd LogCommandData)
+	GetCharts(chartNames []string) ([]portainer.PolicyChartBundle, portainer.RestoreSettingsBundle, error)
+	UpdatePolicyChartStatuses(statuses []portainer.PolicyChartStatus) error
+	ReportPolicyStatuses(statuses []portainer.PolicyActualState) error
+	SetAlertState(state *pkgmetrics.EdgeAlertState)
+}
+
+// ChartCacher is an optional interface for clients that support caching chart
+// bundles received via async commands. The async client implements this so
+// processPolicyStates and processPolicyHelmCharts can cache bundles for
+// on-demand GetCharts retrieval without a concrete type assertion.
+type ChartCacher interface {
+	SetChartsResponse(chart *PolicyHelmCharts)
+}
+
+type EdgeConfigID int
+type EdgeConfigStateType int
+
+func (e EdgeConfigStateType) String() string {
+	switch e {
+	case EdgeConfigIdleState:
+		return "Idle"
+	case EdgeConfigFailureState:
+		return "Failure"
+	case EdgeConfigSavingState:
+		return "Saving"
+	case EdgeConfigDeletingState:
+		return "Deleting"
+	case EdgeConfigUpdatingState:
+		return "Updating"
+	}
+
+	return "N/A"
+}
+
+type EdgeConfig struct {
+	ID         EdgeConfigID
+	Name       string
+	BaseDir    string
+	DirEntries []filesystem.DirEntry
+	Prev       *EdgeConfig
+	Invalid    bool
+}
+
+type PollStatusResponse struct {
+	Status               string                               `json:"status"`
+	Port                 int                                  `json:"port"`
+	Schedules            []agent.Schedule                     `json:"schedules"`
+	CheckinInterval      float64                              `json:"checkin"`
+	Credentials          string                               `json:"credentials"`
+	Stacks               []StackStatus                        `json:"stacks"`
+	EdgeConfigurations   map[EdgeConfigID]EdgeConfigStateType `json:"edge_configurations"`
+	PolicyChartSummaries []portainer.PolicyChartSummary       `json:"policy_chart_summaries"`
+	// PolicyStates is a pointer so the agent can distinguish "new server sent an
+	// empty list (all policies deleted → remove all handlers)" from "old server
+	// omitted the field (use legacy per-chart path)". A nil pointer means the
+	// field was absent; a non-nil pointer to an empty slice means new server,
+	// no active policies.
+	PolicyStates   *[]portainer.PolicyDesiredState `json:"policyStates,omitempty"`
+	AlertRules     []pkgmetrics.EdgeAlertRule      `json:"alert_rules"`
+	AlertRulesYAML string                          `json:"alert_rules_yaml,omitempty"`
+
+	// Async mode only
+	EndpointID       int            `json:"endpointID"`
+	PingInterval     time.Duration  `json:"pingInterval"`
+	SnapshotInterval time.Duration  `json:"snapshotInterval"`
+	CommandInterval  time.Duration  `json:"commandInterval"`
+	AsyncCommands    []AsyncCommand `json:"commands"`
+}
+
+type StackStatus struct {
+	ID               int
+	Version          int
+	Name             string // used in async mode
+	CommandOperation string // used in async mode
+	// ForceRedeploy is used to indicate that the stack should be redeployed
+	// even if the version is the same this value is set by the server
+	ForceRedeploy bool
+	// RepullImage is used to indicate that the image should be re-pulled
+	// during the next deployment of the stack
+	RePullImage bool
+}
+
+type PolicyHelmCharts struct {
+	PolicyChartBundles    []portainer.PolicyChartBundle   `json:"policyChartBundles"`
+	RestoreSettingsBundle portainer.RestoreSettingsBundle `json:"restoreSettingsBundle"`
+}
+
+// PolicyStatesCommandPayload is the value of an async "policyStates" command.
+// Aliased from portainer.PolicyStatesAsyncPayload for local use.
+type PolicyStatesCommandPayload = portainer.PolicyStatesAsyncPayload
+
+type setEndpointIDFn func(portainer.EndpointID)
+type getEndpointIDFn func() portainer.EndpointID
+
+// NewPortainerClient returns a pointer to a new PortainerClient instance
+func NewPortainerClient(serverAddress string, setEIDFn setEndpointIDFn, getEIDFn getEndpointIDFn, edgeID string, edgeKey string, edgeAsyncMode bool, agentPlatform agent.ContainerPlatform, metaFields agent.EdgeMetaFields, httpClient *edgeHTTPClient, gpuOperator bool) PortainerClient {
+	if edgeAsyncMode {
+		return NewPortainerAsyncClient(serverAddress, setEIDFn, getEIDFn, edgeID, edgeKey, agentPlatform, metaFields, httpClient, WithGPUOperator(gpuOperator))
+	}
+
+	return NewPortainerEdgeClient(serverAddress, setEIDFn, getEIDFn, edgeID, agentPlatform, metaFields, httpClient, WithGPUOperator(gpuOperator))
+}

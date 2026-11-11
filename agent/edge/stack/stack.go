@@ -1,0 +1,859 @@
+package stack
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/portainer/agent"
+	"github.com/portainer/agent/deployer"
+	"github.com/portainer/agent/docker"
+	"github.com/portainer/agent/edge/aws"
+	"github.com/portainer/agent/edge/client"
+	"github.com/portainer/agent/edge/yaml"
+	portainer "github.com/portainer/portainer/api"
+	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/api/filesystem"
+	"github.com/portainer/portainer/pkg/libstack"
+
+	"github.com/rs/zerolog/log"
+)
+
+const queueSleepInterval = agent.EdgeStackQueueSleepIntervalSeconds * time.Second
+const perHourRetries = 3600 / 5
+const maxRetries = perHourRetries * 24 * 7 // retry for maximum 1 week
+var waitingStatuses = []edgeStackStatus{StatusAwaitingDeployedStatus, StatusAwaitingRemovedStatus, StatusAwaitingCleanup}
+
+func (manager *StackManager) UpdateStacksStatus(pollResponseStacks map[int]client.StackStatus) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	if !manager.isEnabled {
+		return nil
+	}
+
+	for stackID, status := range pollResponseStacks {
+		if err := manager.processStack(stackID, status); err != nil {
+			if err := manager.portainerClient.SetEdgeStackStatus(stackID, status.Version, portainer.EdgeStackStatusError, nil, err.Error()); err != nil {
+				log.Error().Err(err).Int("stack_identifier", stackID).Msg("unable to update Edge stack status")
+			}
+
+			return err
+		}
+	}
+
+	manager.processRemovedStacks(pollResponseStacks)
+
+	return nil
+}
+
+func (manager *StackManager) addRegistryToEntryFile(stackPayload *edge.StackPayload) error {
+	var fileContent *string
+
+	for index, dirEntry := range stackPayload.DirEntries {
+		if dirEntry.IsFile && dirEntry.Name == stackPayload.EntryFileName {
+			fileContent = &stackPayload.DirEntries[index].Content
+
+			break
+		}
+	}
+
+	if fileContent == nil {
+		return errors.New("EntryFileName not found in DirEntries")
+	}
+
+	switch manager.engineType {
+	case EngineTypeDockerStandalone, EngineTypeDockerSwarm:
+		if (len(stackPayload.RegistryCredentials) > 0 || manager.awsConfig != nil) && stackPayload.EdgeUpdateID > 0 {
+			var err error
+			yml := yaml.NewDockerComposeYAML(*fileContent, stackPayload.RegistryCredentials, manager.awsConfig)
+
+			var envVars []portainer.Pair
+			envVars, *fileContent, err = yml.AddCredentialsAsEnvForSpecificService("updater")
+			if err != nil {
+				return fmt.Errorf("failed to get registry credentials from update service: %w", err)
+			}
+			// This ensures that the compose file does not contain sensitive information such as registry credentials, at the
+			// point of persistence. Instead, the credentials are passed as environment variables to the stack deployer, which will then
+			// interpolate them into the compose spec.
+			stackPayload.EnvVars = append(stackPayload.EnvVars, envVars...)
+		}
+	case EngineTypeKubernetes:
+		if len(stackPayload.RegistryCredentials) > 0 {
+			yml := yaml.NewKubernetesYAML(*fileContent, stackPayload.RegistryCredentials)
+			*fileContent, _ = yml.AddImagePullSecrets()
+		}
+	}
+
+	return nil
+}
+
+func (manager *StackManager) processStack(stackID int, stackStatus client.StackStatus) error {
+	var stack *edgeStack
+	originalStack, known := manager.stacks[edgeStackID(stackID)]
+	if known {
+		// update the cloned stack to keep data consistency
+		clonedStack := *originalStack
+		stack = &clonedStack
+
+		queuedDeleteNotYetStarted := stack.Action == actionDelete && stack.Status == StatusPending
+		if stack.Version == stackStatus.Version && !stackStatus.ForceRedeploy && !queuedDeleteNotYetStarted {
+			return nil // stack is unchanged
+		}
+
+		if queuedDeleteNotYetStarted {
+			log.Info().Int("stack_identifier", stackID).Msg("stack reappeared in poll response before its queued removal started, cancelling removal")
+		}
+
+		log.Debug().Int("stack_identifier", stackID).Msg("marking stack for update")
+
+		stack.Action = actionUpdate
+		stack.Version = stackStatus.Version
+		stack.Status = StatusPending
+
+		stack.PullFinished = false
+		stack.PullCount = 0
+		stack.DeployCount = 0
+		stack.FirstAction = time.Time{}
+	} else {
+		log.Debug().Int("stack_identifier", stackID).Msg("marking stack for deployment")
+
+		stack = &edgeStack{
+			StackPayload: edge.StackPayload{
+				Version: stackStatus.Version,
+				ID:      stackID,
+			},
+			Action: actionDeploy,
+			Status: StatusPending,
+		}
+	}
+
+	stackPayload, err := manager.portainerClient.GetEdgeStackConfig(stackID, &stackStatus.Version)
+	if err != nil {
+		return err
+	}
+
+	edgeIdPair := portainer.Pair{Name: agent.EdgeIdEnvVarName, Value: manager.edgeID}
+
+	stack.Name = stackPayload.Name
+	stack.RegistryCredentials = stackPayload.RegistryCredentials
+	stack.Namespace = stackPayload.Namespace
+	stack.PrePullImage = stackPayload.PrePullImage
+	stack.DeployerOptionsPayload = stackPayload.DeployerOptionsPayload
+	stack.RetryDeploy = stackPayload.RetryDeploy
+	stack.RetryPeriod = stackPayload.RetryPeriod
+	stack.ForceUpdate = stackPayload.ForceUpdate
+	stack.SupportRelativePath = stackPayload.SupportRelativePath
+	stack.AlwaysCloneGitRepoForRelativePath = stackPayload.AlwaysCloneGitRepoForRelativePath
+	stack.SupportPerDeviceConfigs = stackPayload.SupportPerDeviceConfigs
+	stack.FilesystemPath = stackPayload.FilesystemPath
+	stack.FileName = stackPayload.EntryFileName
+	stack.RollbackTo = stackPayload.RollbackTo
+	stack.EdgeUpdateID = stackPayload.EdgeUpdateID
+	stack.CreatedBy = stackPayload.CreatedBy
+	stack.CreatedByUserId = stackPayload.CreatedByUserId
+	stack.HelmConfig = stackPayload.HelmConfig
+	stack.FileFolder = getStackFileFolder(stack)
+
+	// When to force recreate the stack
+	// 1. When the stack is updated by GitOps with the ForceUpdate flag set to true
+	// 2. When the stack is manually forced to re-pull image and redeploy
+	stack.DeployerOptionsPayload.ForceRecreate = stackPayload.ForceUpdate || stackStatus.ForceRedeploy
+	stack.RePullImage = stackPayload.RePullImage || stackStatus.RePullImage
+
+	if err := filesystem.DecodeDirEntries(stackPayload.DirEntries); err != nil {
+		return err
+	}
+
+	if !IsHelmStack(stack) {
+		log.Debug().
+			Str("entry_file_name", stackPayload.EntryFileName).
+			Str("file_folder", stack.FileFolder).
+			Msg("adding registry credentials to stack entry file if needed")
+
+		if err := manager.addRegistryToEntryFile(stackPayload); err != nil {
+			return err
+		}
+	}
+	// `manager.addRegistryToEntryFile` may have added new env vars, so we need to reassign them here
+	stack.EnvVars = append(stackPayload.EnvVars, edgeIdPair)
+
+	// Handle Helm-specific configuration
+	addHelmConfigToStack(stack, stackPayload)
+
+	// Apply Kubernetes labels to manifest if this is a Kubernetes edge stack
+	if err := manager.applyK8sLabelsIfNeeded(stack, stackPayload.DirEntries); err != nil {
+		return err
+	}
+
+	if err := filesystem.PersistDir(stack.FileFolder, stackPayload.DirEntries); err != nil {
+		return err
+	}
+
+	manager.stacks[edgeStackID(stackID)] = stack
+
+	log.Debug().
+		Int("stack_identifier", stack.ID).
+		Str("stack_name", stack.Name).
+		Str("namespace", stack.Namespace).
+		Msg("stack acknowledged")
+
+	return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusAcknowledged, stack.RollbackTo, "")
+}
+
+func (manager *StackManager) processRemovedStacks(pollResponseStacks map[int]client.StackStatus) {
+	for stackID, stack := range manager.stacks {
+		if _, ok := pollResponseStacks[int(stackID)]; !ok {
+			stack.Action = actionDelete
+			if stack.Status != StatusAwaitingRemovedStatus && stack.Status != StatusAwaitingCleanup {
+				stack.Status = StatusPending
+			}
+			log.Debug().Int("stack_identifier", int(stackID)).Str("status", stack.Status.String()).Str("action", stack.Action.String()).Msg("marking stack for deletion")
+
+			manager.stacks[stackID] = stack
+		}
+	}
+}
+
+// this function performs actions based on stack action and status
+// - stack.Action is tracking actions performed by user in the UI (Create Update Delete) and defined/driven by the poll loop
+// - stack.Status is tracking the deployment lifecycle (A to B transitions to reach the desired runtime state)
+func (manager *StackManager) performActionOnStack() {
+	stack := manager.nextPendingStack()
+	if stack == nil {
+		time.Sleep(queueSleepInterval)
+
+		return
+	}
+
+	ctx := context.TODO()
+
+	manager.mu.Lock()
+	stack.LastAction = time.Now()
+
+	if stack.FirstAction.IsZero() {
+		stack.FirstAction = stack.LastAction
+	}
+
+	stackName := "edge_" + stack.Name
+	stackFileLocation := fmt.Sprintf("%s/%s", stack.FileFolder, stack.FileName)
+
+	// When the edge update fails after the old agent container was stopped, and portainer-updater compensates by restarting the old agent container.
+	// This logic ensures that the stack is marked as failed and avoids the stack to be deployed again.
+	if stack.EdgeUpdateID > 0 && stack.EdgeUpdateFailed && stack.Action != actionDelete {
+		log.Debug().
+			Str("name", stackName).
+			Msg("identified stack as failed update")
+		// By setting the status to StatusDeployed, we avoid the stack to be deployed again and makes it possible to collect the error log
+		// in the next status check.
+		stack.Status = StatusDeployed
+	}
+
+	manager.mu.Unlock()
+
+	log.Debug().Str("name", stackName).Str("status", stack.Status.String()).Str("action", stack.Action.String()).Msg("evaluating stack")
+	switch stack.Status {
+	case StatusAwaitingDeployedStatus, StatusAwaitingRemovedStatus, StatusDeployed:
+		checkStatusOptions := deployer.CheckStatusOptions{
+			StackFileLocation: stackFileLocation,
+			DeployerBaseOptions: deployer.DeployerBaseOptions{
+				Namespace: stack.Namespace,
+			},
+		}
+
+		if IsGitRepoHelmStack(stack) {
+			checkStatusOptions.Env = append(checkStatusOptions.Env, "HELM_CHART_PATH="+stack.HelmConfig.ChartPath)
+		} else if IsHelmRepoStack(stack) {
+			checkStatusOptions.Env = append(checkStatusOptions.Env, "HELM_REPO_URL="+stack.HelmConfig.ChartURL)
+		}
+		if err := manager.checkStackStatus(ctx, stackName, stack, checkStatusOptions); err != nil {
+			log.Error().Err(err).Msg("unable to check Edge stack status")
+		}
+		return
+	case StatusAwaitingCleanup:
+		manager.cleanupStack(stack, stackName)
+		return
+	}
+
+	switch stack.Action {
+	case actionDeploy, actionUpdate:
+		// validate the stack file and fail-fast if the stack format is invalid
+		// each deployer has its own Validate function
+		if err := manager.validateStackFile(ctx, stack, stackName, stackFileLocation); err != nil {
+			return
+		}
+
+		if err := manager.pullImages(ctx, stack, stackName, stackFileLocation); err != nil {
+			return
+		}
+
+		// Copying the stack files to the host will delete all existing files in the
+		// bind source folder. However, container recreation is not guaranteed during
+		// this process, so changes to the bind source may not be reflected in the container.
+		// Therefore, this operation should only be performed if the stack is new
+		// or the AlwaysCloneGitRepoForRelativePath flag is set to true.
+		if !IsHelmStack(stack) && IsRelativePathStack(stack) && (stack.Action == actionDeploy || stack.AlwaysCloneGitRepoForRelativePath) {
+			dst := filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+
+			if err := docker.CopyGitStackToHost(stack.FileFolder, dst, stack.ID, stackName, stack.RegistryCredentials); err != nil {
+				log.Error().Err(err).Msg("unable to copy the stack to host")
+
+				manager.mu.Lock()
+				stack.Status = StatusError
+				manager.mu.Unlock()
+
+				if err := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, fmt.Errorf("failed to copy git stack to host: %w", err).Error()); err != nil {
+					log.Error().Err(err).Msg("unable to update Edge stack status")
+				}
+
+				return
+			}
+		}
+
+		manager.deployStack(ctx, stack, stackName, stackFileLocation)
+
+		resetForceRecreateStatus(stack)
+	case actionDelete:
+		stackFileLocation = fmt.Sprintf("%s/%s", SuccessStackFileFolder(stack.FileFolder), stack.FileName)
+		manager.deleteStack(ctx, stack, stackName, stackFileLocation)
+	}
+}
+
+func (manager *StackManager) nextPendingStack() *edgeStack {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	// find the first pending stack, prioritizing removals so that a stack
+	// being undeployed always releases its resources before another pending
+	// stack is deployed
+	// if not found, look for a stack waiting for status check or cleanup
+	// if not found, look for the first retry stack and set it to pending
+
+	// Filter out stacks that were used too recently
+	coldStacks := []*edgeStack{}
+	for _, stack := range manager.stacks {
+		if time.Since(stack.LastAction) < queueSleepInterval {
+			continue
+		}
+
+		coldStacks = append(coldStacks, stack)
+	}
+
+	for _, stack := range coldStacks {
+		if stack.Status == StatusPending && stack.Action == actionDelete {
+			return stack
+		}
+	}
+
+	for _, stack := range coldStacks {
+		if stack.Status == StatusPending {
+			return stack
+		}
+	}
+
+	for _, stack := range coldStacks {
+		if slices.Contains(waitingStatuses, stack.Status) {
+			return stack
+		}
+	}
+
+	for _, stack := range coldStacks {
+		if stack.Status == StatusRetry {
+			log.Debug().
+				Int("stack_identifier", stack.ID).
+				Msg("retrying stack")
+
+			stack.Status = StatusPending
+		}
+	}
+
+	for _, stack := range coldStacks {
+		if stack.Status == StatusDeployed && !IsHelmStack(stack) {
+			return stack
+		}
+	}
+
+	return nil
+}
+
+// check the status of running workloads for stack when stack.Status is
+// one of StatusAwaitingDeployedStatus | StatusAwaitingRemovedStatus | StatusDeployed
+func (manager *StackManager) checkStackStatus(ctx context.Context, stackName string, stack *edgeStack, options deployer.CheckStatusOptions) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	log.Debug().
+		Int("stack_identifier", stack.ID).
+		Str("stack_name", stackName).
+		Str("status", stack.Status.String()).
+		Str("helm_chart_path", stack.HelmConfig.ChartPath).
+		Strs("env", options.Env).
+		Msg("checking stack status")
+
+	requiredStatus := libstack.StatusRemoved
+
+	switch stack.Status {
+	case StatusAwaitingRemovedStatus:
+		requiredStatus = libstack.StatusRemoved
+	case StatusAwaitingDeployedStatus:
+		requiredStatus = libstack.StatusRunning
+	case StatusDeployed:
+		if stack.EdgeUpdateID == 0 {
+			// There is no need to wait for a change of state, just observe if it
+			// has happened already, the new timeout is just enough to get past the
+			// ctx.Done() check and run once.
+			var cancelFn func()
+			ctx, cancelFn = context.WithTimeout(ctx, 1*time.Second)
+			defer cancelFn()
+		}
+
+		requiredStatus = libstack.StatusCompleted
+	}
+
+	// This releases the lock only for the removal wait, since processRemovedStacks never resets that status
+	status, statusMessage := manager.waitForStatus(ctx, stackName, requiredStatus, options, requiredStatus == libstack.StatusRemoved)
+
+	// if the stack is an edge update, and the status message contains a context deadline exceeded error,
+	// the update takes longer than expected, and we need to ignore the status, and let it
+	// try again in the next status check.
+	if stack.EdgeUpdateID != 0 && strings.Contains(statusMessage, context.DeadlineExceeded.Error()) {
+		log.Debug().
+			Int("stack_identifier", stack.ID).
+			Str("stack_name", stackName).
+			Str("required_status", string(requiredStatus)).
+			Str("status", string(status)).
+			Str("status_message", statusMessage).
+			Int("edge_update_id", stack.EdgeUpdateID).
+			Msg("stack status timeout")
+
+		return nil
+	}
+
+	// Only report back the Completed status for already deployed stacks
+	if stack.Status == StatusDeployed && stack.EdgeUpdateID == 0 {
+		if status == libstack.StatusCompleted {
+			stack.Status = StatusCompleted
+			return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusCompleted, stack.RollbackTo, "")
+		}
+
+		return nil
+	}
+
+	switch status {
+	case libstack.StatusError:
+		stack.Status = StatusError
+
+		// Remove() already succeeded. This skips StatusError so it does not retry forever
+		if requiredStatus == libstack.StatusRemoved {
+			stack.Status = StatusAwaitingCleanup
+		}
+
+		return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, statusMessage)
+	case libstack.StatusRunning:
+		stack.Status = StatusDeployed
+		return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusRunning, stack.RollbackTo, "")
+	case libstack.StatusCompleted:
+		stack.Status = StatusCompleted
+		return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusCompleted, stack.RollbackTo, "")
+	case libstack.StatusRemoved:
+		if stack.Status == StatusAwaitingRemovedStatus {
+			stack.Status = StatusAwaitingCleanup
+		}
+		return manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusRemoved, stack.RollbackTo, "")
+	default:
+	}
+
+	return nil
+}
+
+func (manager *StackManager) waitForStatus(ctx context.Context, stackName string, requiredStatus libstack.Status, options deployer.CheckStatusOptions, releaseLock bool) (libstack.Status, string) {
+	if releaseLock {
+		manager.mu.Unlock()
+		defer manager.mu.Lock()
+	}
+
+	ctx, cancel := context.WithTimeout(ctx, 1*time.Minute)
+	defer cancel()
+
+	result := manager.deployer.WaitForStatus(ctx, stackName, requiredStatus, options)
+	if result.ErrorMsg == "" {
+		return result.Status, ""
+	}
+
+	return libstack.StatusError, result.ErrorMsg
+}
+
+func (manager *StackManager) validateStackFile(ctx context.Context, stack *edgeStack, stackName, stackFileLocation string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	log.Debug().Int("stack_identifier", stack.ID).
+		Str("stack_name", stackName).
+		Str("namespace", stack.Namespace).
+		Msg("validating stack")
+
+	envVars := buildEnvVarsForDeployer(stack.EnvVars)
+
+	err := manager.deployer.Validate(ctx, stackName, []string{stackFileLocation},
+		deployer.ValidateOptions{
+			DeployerBaseOptions: deployer.DeployerBaseOptions{
+				Namespace:  stack.Namespace,
+				WorkingDir: stack.FileFolder,
+				Env:        envVars,
+			},
+		},
+	)
+	if err != nil {
+		log.Error().Int("stack_identifier", stack.ID).Err(err).Msg("stack validation failed")
+		stack.Status = StatusError
+
+		statusUpdateErr := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, fmt.Errorf("failed to validate stack: %w", err).Error())
+		if statusUpdateErr != nil {
+			log.Error().Err(statusUpdateErr).Msg("unable to update Edge stack status")
+		}
+	} else {
+		log.Debug().Int("stack_identifier", stack.ID).Int("stack_version", stack.Version).Msg("stack validated")
+	}
+
+	return err
+}
+
+func (manager *StackManager) pullImages(ctx context.Context, stack *edgeStack, stackName, stackFileLocation string) error {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	if stack.PullFinished || (!stack.PrePullImage && !stack.RePullImage) {
+		return nil
+	}
+
+	log.Debug().Int("stack_identifier", stack.ID).Msg("pulling images")
+
+	stack.PullCount++
+	if stack.PullCount > perHourRetries && stack.PullCount%perHourRetries != 0 {
+		return errors.New("skip pulling")
+	}
+
+	stack.Status = StatusDeploying
+
+	envVars := buildEnvVarsForDeployer(stack.EnvVars)
+
+	// Unlock so GetEdgeRegistryCredentials() can acquire the lock if called
+	manager.mu.Unlock()
+
+	regCreds, err := manager.ensureRegCreds(stack)
+	if err != nil {
+		// failing to ensure credentials (currently only happens if IAMRA ECR login is required but fails) will fail
+		// deployment. It will continue from here with the err value set which will be checked below after the lock and
+		// cause a normal retry
+		log.Error().Err(err).Msg("unable to ensure registry credentials")
+	} else {
+		err = manager.deployer.Pull(ctx, stackName, []string{stackFileLocation}, deployer.PullOptions{
+			DeployerBaseOptions: deployer.DeployerBaseOptions{
+				WorkingDir: stack.FileFolder,
+				Env:        envVars,
+				Registries: regCreds,
+			},
+		})
+	}
+
+	manager.mu.Lock()
+
+	if err != nil {
+		log.Error().Err(err).
+			Int("stack_identifier", stack.ID).
+			Int("PullCount", stack.PullCount).
+			Msg("images pull failed")
+
+		withinRetryPeriod := stack.RetryPeriod <= 0 || int(time.Since(stack.FirstAction).Seconds()) < stack.RetryPeriod
+		if stack.PullCount < maxRetries && withinRetryPeriod {
+			stack.Status = StatusRetry
+
+			return err
+		}
+
+		stack.Status = StatusError
+
+		statusUpdateErr := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, fmt.Errorf("failed to pull image: %w", err).Error())
+		if statusUpdateErr != nil {
+			log.Error().
+				Err(statusUpdateErr).
+				Int("stack_identifier", stack.ID).
+				Msg("unable to update Edge stack status")
+		}
+
+		return err
+	}
+
+	stack.PullFinished = true
+
+	log.Debug().
+		Int("stack_identifier", stack.ID).
+		Int("stack_version", stack.Version).
+		Msg("images pulled")
+
+	statusUpdateErr := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusImagesPulled, stack.RollbackTo, "")
+	if statusUpdateErr != nil {
+		log.Error().
+			Err(statusUpdateErr).
+			Int("stack_identifier", stack.ID).
+			Msg("unable to update Edge stack status")
+	}
+
+	return nil
+}
+
+func (manager *StackManager) deployStack(ctx context.Context, stack *edgeStack, stackName, stackFileLocation string) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	stack.DeployCount++
+
+	if err := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusDeploying, stack.RollbackTo, ""); err != nil {
+		log.Error().Err(err).Msg("unable to update Edge stack status")
+	}
+
+	stack.Status = StatusDeploying
+
+	log.Debug().
+		Int("stack_identifier", stack.ID).
+		Bool("retry_deploy", stack.RetryDeploy).
+		Int("deploy_count", stack.DeployCount).
+		Str("stack_name", stackName).
+		Str("namespace", stack.Namespace).
+		Msg("stack deployment")
+
+	if stack.DeployCount > perHourRetries && stack.DeployCount%perHourRetries != 0 {
+		stack.Status = StatusRetry
+
+		return
+	}
+
+	envVars := buildEnvVarsForDeployer(stack.EnvVars)
+
+	// Unlock so GetEdgeRegistryCredentials() can acquire the lock if called
+	manager.mu.Unlock()
+
+	regCreds, err := manager.ensureRegCreds(stack)
+	if err != nil {
+		// failing to ensure credentials (currently only happens if IAMRA ECR login is required but fails) will fail
+		// deployment. It will continue from here with the err value set which will be checked below after the lock and
+		// cause a normal retry
+		log.Error().Err(err).Msg("unable to ensure registry credentials")
+	} else {
+		appLabels := buildK8sAppLabels(stack)
+		err = manager.deployer.Deploy(ctx, stackName, []string{stackFileLocation},
+			deployer.DeployOptions{
+				DeployerBaseOptions: deployer.DeployerBaseOptions{
+					Namespace:  stack.Namespace,
+					WorkingDir: stack.FileFolder,
+					Env:        envVars,
+					Registries: regCreds,
+				},
+				EdgeStackID:          portainer.EdgeStackID(stack.ID),
+				Prune:                stack.DeployerOptionsPayload.Prune,
+				ForceRecreate:        stack.DeployerOptionsPayload.ForceRecreate,
+				HelmAppLabels:        appLabels.ToMap(),
+				BindMountHashEnabled: stack.SupportPerDeviceConfigs,
+			},
+		)
+	}
+	manager.mu.Lock()
+
+	if err != nil {
+		log.Error().Err(err).Int("DeployCount", stack.DeployCount).Msg("stack deployment failed")
+
+		withinRetryPeriod := stack.RetryPeriod <= 0 || int(time.Since(stack.FirstAction).Seconds()) < stack.RetryPeriod
+		if stack.RetryDeploy && stack.DeployCount < maxRetries && withinRetryPeriod {
+			stack.Status = StatusRetry
+
+			return
+		}
+
+		stack.Status = StatusError
+
+		if err := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, fmt.Errorf("failed to redeploy stack: %w", err).Error()); err != nil {
+			log.Error().Err(err).Msg("unable to update Edge stack status")
+		}
+
+		return
+	}
+
+	stack.Action = actionIdle
+
+	log.Debug().
+		Int("stack_identifier", stack.ID).
+		Int("stack_version", stack.Version).Msg("stack deployed")
+
+	if err := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusDeploymentReceived, stack.RollbackTo, ""); err != nil {
+		log.Error().Err(err).Msg("unable to update Edge stack status")
+	}
+
+	if err := backupSuccessStack(stack); err != nil {
+		log.Error().Err(err).Msg("unable to backup successful Edge stack")
+	}
+
+	stack.Status = StatusAwaitingDeployedStatus
+}
+
+// this function performs a cleanup of the stack state
+// - remove the files related to the stack from the host
+// - remove the stack entry from the  manager map
+func (manager *StackManager) cleanupStack(stack *edgeStack, stackName string) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	log.Debug().Int("stack_identifier", stack.ID).Str("stack_name", stackName).Msg("cleaning stack files")
+
+	// Remove stack file folder
+	if err := os.RemoveAll(stack.FileFolder); err != nil {
+		log.Warn().
+			Err(err).
+			Str("context", "EdgeStackManager").
+			Str("stack_file_folder", stack.FileFolder).
+			Msg("Unable to delete Edge stack folder")
+	}
+
+	// Remove success stack file folder
+	successFileFolder := SuccessStackFileFolder(stack.FileFolder)
+	if err := os.RemoveAll(successFileFolder); err != nil {
+		log.Warn().
+			Err(err).
+			Str("context", "EdgeStackManager").
+			Str("stack_success_file_folder", successFileFolder).
+			Msg("Unable to delete Edge stack success folder")
+	}
+
+	// Remove git folder
+	if !IsHelmStack(stack) && IsRelativePathStack(stack) {
+		dst := filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+
+		if err := docker.RemoveGitStackFromHost(stack.FileFolder, dst, stack.ID, stackName, stack.RegistryCredentials); err != nil {
+			log.Warn().
+				Err(err).
+				Str("context", "EdgeStackManager").
+				Str("stack_file_folder", stack.FileFolder).
+				Msg("Unable to delete Edge stack git folder")
+		}
+	}
+
+	// Remove stack from manager map
+	delete(manager.stacks, edgeStackID(stack.ID))
+}
+
+// this function undeploys the stack (deployer.Remove()) and reports its Removing status to the API
+// Note: If the removal fails, the stack status is set to StatusAwaitingCleanup to bypass the waitForStatus() path,
+// which could lead to further errors. This ensures the stack proceeds directly to the cleanup process.
+func (manager *StackManager) deleteStack(ctx context.Context, stack *edgeStack, stackName, stackFileLocation string) {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	stack.Status = StatusRemoving
+	log.Debug().Int("stack_identifier", stack.ID).Msg("removing stack")
+
+	successFileFolder := SuccessStackFileFolder(stack.FileFolder)
+
+	if err := manager.deployer.Remove(
+		ctx,
+		stackName,
+		[]string{stackFileLocation},
+		deployer.RemoveOptions{
+			DeployerBaseOptions: deployer.DeployerBaseOptions{
+				Namespace:  stack.Namespace,
+				WorkingDir: successFileFolder,
+				Env:        buildEnvVarsForDeployer(stack.EnvVars),
+			},
+			Volumes: stack.DeployerOptionsPayload.RemoveVolumes,
+		},
+	); err != nil {
+		log.Warn().
+			Err(err).
+			Str("context", "EdgeStackManager").
+			Int("stack_identifier", stack.ID).
+			Str("stack_name", stackName).
+			Str("stack_file_location", stackFileLocation).
+			Str("namespace", stack.Namespace).
+			Msg("unable to remove Edge stack")
+
+		// If the stack removal fails, we set the status to StatusAwaitingCleanup.
+		// This avoids updating the status to StatusAwaitingRemovedStatus, which would trigger the waitForStatus() path
+		// and likely result in additional errors. By setting it to StatusAwaitingCleanup, we ensure the stack
+		// moves directly to the cleanup process.
+		stack.Status = StatusAwaitingCleanup
+
+		return
+	}
+
+	if err := manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusRemoving, stack.RollbackTo, ""); err != nil {
+		log.Error().Err(err).Msg("unable to delete Edge stack status")
+
+		return
+	}
+
+	stack.Status = StatusAwaitingRemovedStatus
+}
+
+func (manager *StackManager) GetEdgeRegistryCredentials() []edge.RegistryCredentials {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	for _, stack := range manager.stacks {
+		if stack.Status == StatusDeploying {
+			return stack.RegistryCredentials
+		}
+	}
+
+	return nil
+}
+
+func (manager *StackManager) ensureRegCreds(stack *edgeStack) ([]edge.RegistryCredentials, error) {
+	var rcs []edge.RegistryCredentials
+
+	for _, rc := range stack.RegistryCredentials {
+		if manager.awsConfig != nil {
+			log.Info().Msg("using local AWS IAMRA config for credential lookup for ensureRegCreds")
+
+			// Use client certificate to authenticate with IAMRA and fetch temporary ECR credentials
+			ecrCred, err := aws.DoAWSIAMRolesAnywhereAuthAndGetECRCredentials(rc.ServerURL, manager.awsConfig)
+			if err == nil && ecrCred != nil {
+				log.Info().Str("registry_server_url", rc.ServerURL).Msg("successfully fetched ECR credentials for private ECR repository, adding regCreds")
+				rc = *ecrCred
+			} else if errors.Is(err, aws.ErrNotPrivateECRRepo) {
+				log.Info().Str("registry_server_url", rc.ServerURL).Msg("repository url is not a private ECR repository, continuing without credentials")
+				continue
+			} else {
+				log.Error().Err(err).Str("registry_server_url", rc.ServerURL).Msg("failed to fetch ECR credentials for private ECR repository, failing deployment")
+				return nil, fmt.Errorf("failed to fetch ECR credentials for private ECR repository: %w", err)
+			}
+		}
+
+		rcs = append(rcs, rc)
+	}
+
+	return rcs, nil
+}
+
+func buildEnvVarsForDeployer(envVars []portainer.Pair) []string {
+	arr := make([]string, len(envVars))
+	for i, env := range envVars {
+		arr[i] = fmt.Sprintf("%s=%s", env.Name, env.Value)
+	}
+
+	return arr
+}
+
+func resetForceRecreateStatus(stack *edgeStack) {
+	// When Force redeployment is set for the stack from GitOps updates, the stack.ForceUpdate will
+	// always be true. That means the stack will be force recreated on every polling frequency (5s
+	// by default). But this is not the desired behavior.
+	//
+	// We should only execute the force redeployment once until the next GitOps update is triggered.
+	// Therefore, when the stack.ForceRecreate is set to true, after passing it to compose service, we
+	// should reset it to false.
+	if stack.DeployerOptionsPayload.ForceRecreate {
+		stack.DeployerOptionsPayload.ForceRecreate = false
+	}
+}

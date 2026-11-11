@@ -1,0 +1,394 @@
+package edge
+
+import (
+	"encoding/base64"
+	"errors"
+	"fmt"
+	"os"
+	"sync"
+	"time"
+
+	"context"
+
+	"github.com/portainer/agent"
+	"github.com/portainer/agent/deployer"
+	"github.com/portainer/agent/docker/cleanup"
+	"github.com/portainer/agent/edge/aws"
+	"github.com/portainer/agent/edge/client"
+	"github.com/portainer/agent/edge/policies"
+	"github.com/portainer/agent/edge/policies/helm"
+	"github.com/portainer/agent/edge/policies/resourcepatch"
+	"github.com/portainer/agent/edge/scheduler"
+	"github.com/portainer/agent/edge/stack"
+	"github.com/portainer/agent/exec"
+	agentmetrics "github.com/portainer/agent/http/handler/metrics"
+	"github.com/portainer/agent/kubernetes"
+	portainer "github.com/portainer/portainer/api"
+	"github.com/portainer/portainer/api/filesystem"
+	"github.com/portainer/portainer/pkg/libhelm/sdk"
+
+	"github.com/rs/zerolog/log"
+)
+
+type (
+	// Manager is used to manage all Edge features through multiple sub-components. It is mainly responsible for running the Edge background process.
+	Manager struct {
+		containerPlatform agent.ContainerPlatform
+		advertiseAddr     string
+		agentOptions      *agent.Options
+		clusterService    agent.ClusterService
+		dockerInfoService agent.DockerInfoService
+		kubeClient        *kubernetes.KubeClient
+		key               *edgeKey
+		logsManager       *scheduler.LogsManager
+		metricsHandler    *agentmetrics.Handler
+		pollService       *PollService
+		stackManager      *stack.StackManager
+		mu                sync.Mutex
+	}
+
+	// ManagerParameters represents an object used to create a Manager
+	ManagerParameters struct {
+		Options           *agent.Options
+		AdvertiseAddr     string
+		ClusterService    agent.ClusterService
+		DockerInfoService agent.DockerInfoService
+		ContainerPlatform agent.ContainerPlatform
+		KubeClient        *kubernetes.KubeClient
+	}
+)
+
+func (manager *Manager) GetStackManager() *stack.StackManager {
+	return manager.stackManager
+}
+
+// NewManager returns a pointer to a new instance of Manager
+func NewManager(parameters *ManagerParameters) *Manager {
+	var metricsHandler *agentmetrics.Handler
+	if parameters.ContainerPlatform == agent.PlatformKubernetes {
+		metricsHandler = agentmetrics.NewHandler()
+	}
+
+	return &Manager{
+		clusterService:    parameters.ClusterService,
+		dockerInfoService: parameters.DockerInfoService,
+		agentOptions:      parameters.Options,
+		advertiseAddr:     parameters.AdvertiseAddr,
+		containerPlatform: parameters.ContainerPlatform,
+		kubeClient:        parameters.KubeClient,
+		metricsHandler:    metricsHandler,
+	}
+}
+
+// Start starts the manager
+func (manager *Manager) Start() error {
+	if !manager.IsKeySet() {
+		return errors.New("unable to Start Edge manager without key")
+	}
+
+	apiServerAddr := fmt.Sprintf("%s:%s", manager.advertiseAddr, manager.agentOptions.AgentServerPort)
+
+	pollServiceConfig := &pollServiceConfig{
+		APIServerAddr:           apiServerAddr,
+		EdgeID:                  manager.agentOptions.EdgeID,
+		PollFrequency:           agent.DefaultEdgePollInterval,
+		InactivityTimeout:       manager.agentOptions.EdgeInactivityTimeout,
+		TunnelCapability:        manager.agentOptions.EdgeTunnel,
+		PortainerURL:            manager.key.PortainerInstanceURL,
+		TunnelServerAddr:        manager.key.TunnelServerAddr,
+		TunnelServerFingerprint: manager.key.TunnelServerFingerprint,
+		TunnelProxy:             manager.agentOptions.EdgeTunnelProxy,
+		ContainerPlatform:       manager.containerPlatform,
+	}
+
+	log.Debug().
+		Str("api_addr", pollServiceConfig.APIServerAddr).
+		Str("edge_id", pollServiceConfig.EdgeID).
+		Str("poll_frequency", pollServiceConfig.PollFrequency).
+		Str("inactivity_timeout", pollServiceConfig.InactivityTimeout).
+		Bool("insecure_poll", manager.agentOptions.EdgeInsecurePoll).
+		Bool("tunnel_capability", manager.agentOptions.EdgeTunnel).
+		Msg("")
+
+	// When the header is not set to PlatformDocker Portainer assumes the platform to be kubernetes.
+	// However, Portainer should handle podman agents the same way as docker agents.
+	agentPlatform := manager.containerPlatform
+	if manager.containerPlatform == agent.PlatformPodman {
+		agentPlatform = agent.PlatformDocker
+	}
+
+	portainerClient := client.NewPortainerClient(
+		manager.key.PortainerInstanceURL,
+		manager.SetEndpointID,
+		manager.GetEndpointID,
+		manager.agentOptions.EdgeID,
+		manager.agentOptions.EdgeKey,
+		manager.agentOptions.EdgeAsyncMode,
+		agentPlatform,
+		manager.agentOptions.EdgeMetaFields,
+		client.BuildHTTPClient(client.DefaultHTTPClientTimeoutSeconds, manager.agentOptions),
+		manager.agentOptions.GPUOperator,
+	)
+
+	manager.stackManager = stack.NewStackManager(
+		portainerClient,
+		aws.ExtractAwsConfig(manager.agentOptions),
+		manager.agentOptions.EdgeID,
+		manager.kubeClient,
+	)
+
+	manager.logsManager = scheduler.NewLogsManager(portainerClient)
+	manager.logsManager.Start()
+
+	helmPackageManager := sdk.NewHelmSDKPackageManager()
+	coordinator := helm.NewRestoreCoordinator(buildKubernetesRestoreApplier(manager.kubeClient))
+	// Namespace-drift checks are driven per-handler (see HelmHandler.checkNamespaceDrift,
+	// wired from each handler's own kubeClient in NewHandler); this is just the
+	// per-poll registry that dispatches Tick to whichever handlers are currently live.
+	nsDriftCoordinator := helm.NewNamespaceDriftCoordinator()
+
+	// Create chartReporter before PolicyManager so both the legacy coordinator
+	// and the reconciler factory share the same reporter instance from the start.
+	var chartReporter *helm.ChartStatusReporter
+	if manager.kubeClient != nil {
+		chartReporter = helm.NewChartStatusReporter()
+	}
+
+	policyManager := policies.NewPolicyManager(
+		portainerClient,
+		manager.kubeClient,
+		helmPackageManager,
+		coordinator,
+		chartReporter,
+		nsDriftCoordinator,
+		0, // endpointID unknown at startup; server resolves from request context
+	)
+
+	pollService, err := newPollService(
+		manager,
+		manager.stackManager,
+		manager.logsManager,
+		pollServiceConfig,
+		portainerClient,
+		policyManager,
+		manager.agentOptions.EdgeAsyncMode,
+	)
+	if err != nil {
+		return err
+	}
+	manager.pollService = pollService
+
+	// K8s platform: register the helm-k8s policy reconciler.
+	// SetChartReporter is still needed for the legacy per-chart status endpoint.
+	if manager.kubeClient != nil {
+		manager.pollService.RegisterPolicy(helm.Registration(
+			manager.kubeClient, helmPackageManager, portainerClient, coordinator, chartReporter, nsDriftCoordinator,
+		))
+		manager.pollService.RegisterPolicy(resourcepatch.Registration(manager.kubeClient))
+		manager.pollService.SetChartReporter(chartReporter)
+	}
+
+	// Docker / Podman: register the cleanup-docker policy reconciler.
+	if manager.containerPlatform == agent.PlatformDocker || manager.containerPlatform == agent.PlatformPodman {
+		manager.pollService.RegisterPolicy(cleanup.Registration())
+	}
+
+	return manager.startEdgeBackgroundProcess()
+}
+
+// buildKubernetesRestoreApplier returns an ApplierFunc that kubectl-applies a
+// base64-encoded YAML manifest via the existing KubernetesDeployer.
+func buildKubernetesRestoreApplier(kubeClient *kubernetes.KubeClient) helm.ApplierFunc {
+	return func(ctx context.Context, manifest string) error {
+		decodedManifest, err := base64.StdEncoding.DecodeString(manifest)
+		if err != nil {
+			return fmt.Errorf("decode restore manifest: %w", err)
+		}
+
+		f, err := os.CreateTemp("", "portainer-restore-*.yaml")
+		if err != nil {
+			return fmt.Errorf("create temp manifest file: %w", err)
+		}
+		defer func() { _ = os.Remove(f.Name()) }()
+		if _, err := f.Write(decodedManifest); err != nil {
+			_ = f.Close()
+			return fmt.Errorf("write manifest: %w", err)
+		}
+		if err := f.Close(); err != nil {
+			return fmt.Errorf("close manifest file: %w", err)
+		}
+		kubeDeployer := exec.NewKubernetesDeployer(kubeClient)
+		return kubeDeployer.Deploy(ctx, "portainer-policy-restore", []string{f.Name()}, deployer.DeployOptions{})
+	}
+}
+
+// ResetActivityTimer resets the activity timer
+func (manager *Manager) ResetActivityTimer() {
+	manager.pollService.resetActivityTimer()
+}
+
+// MetricsHandler returns the agent metrics handler for the /api/metrics endpoint.
+// Returns nil when metrics collection is not enabled for the current platform.
+func (manager *Manager) MetricsHandler() *agentmetrics.Handler {
+	return manager.metricsHandler
+}
+
+// SetEndpointID set the endpointID of the agent
+func (manager *Manager) SetEndpointID(endpointID portainer.EndpointID) {
+	manager.mu.Lock()
+	if manager.key.EndpointID != endpointID && manager.key.Global {
+		log.Info().Int("endpoint_id", int(endpointID)).Msg("setting endpoint ID")
+
+		manager.key.EndpointID = endpointID
+	}
+	manager.mu.Unlock()
+}
+
+// GetEndpointID gets the endpointID of the agent
+func (manager *Manager) GetEndpointID() portainer.EndpointID {
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+
+	return manager.key.EndpointID
+}
+
+func (manager *Manager) startEdgeBackgroundProcessOnDocker(runtimeCheckFrequency time.Duration) error {
+	if err := manager.checkDockerRuntimeConfig(); err != nil {
+		return err
+	}
+
+	go func() {
+		ticker := time.NewTicker(runtimeCheckFrequency)
+		for range ticker.C {
+			if err := manager.checkDockerRuntimeConfig(); err != nil {
+				log.Error().Msg("an error occurred during Docker runtime configuration check")
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (manager *Manager) startEdgeBackgroundProcessOnKubernetes(runtimeCheckFrequency time.Duration) error {
+	if err := manager.stackManager.SetEngineType(stack.EngineTypeKubernetes); err != nil {
+		log.Error().Err(err).Msg("unable to set engine status")
+	} else {
+		manager.pollService.Start()
+	}
+
+	go func() {
+		ticker := time.NewTicker(runtimeCheckFrequency)
+		for range ticker.C {
+			if err := manager.stackManager.SetEngineType(stack.EngineTypeKubernetes); err != nil {
+				log.Error().Err(err).Msg("unable to set engine status")
+
+				return
+			}
+
+			manager.pollService.Start()
+
+			if err := manager.stackManager.Start(); err != nil {
+				log.Error().Err(err).Msg("unable to Start stack manager")
+
+				return
+			}
+		}
+	}()
+
+	return nil
+}
+
+func (manager *Manager) startEdgeBackgroundProcess() error {
+	runtimeCheckFrequency, err := time.ParseDuration(agent.DefaultConfigCheckInterval)
+	if err != nil {
+		return err
+	}
+
+	switch manager.containerPlatform {
+	case agent.PlatformDocker, agent.PlatformPodman:
+		return manager.startEdgeBackgroundProcessOnDocker(runtimeCheckFrequency)
+	case agent.PlatformKubernetes:
+		return manager.startEdgeBackgroundProcessOnKubernetes(runtimeCheckFrequency)
+	}
+
+	return nil
+}
+
+func (manager *Manager) checkDockerRuntimeConfig() error {
+	runtimeConfig, err := manager.dockerInfoService.GetRuntimeConfigurationFromDockerEngine()
+	if err != nil {
+		return err
+	}
+
+	agentRunsOnLeaderNode := runtimeConfig.DockerConfig.Leader
+	agentRunsOnSwarm := runtimeConfig.DockerConfig.EngineType == agent.EngineTypeSwarm
+
+	log.Debug().
+		Str("engine_type", fmt.Sprintf("%+v", runtimeConfig.DockerConfig.EngineType)).
+		Bool("leader_node", agentRunsOnLeaderNode).
+		Msg("Docker runtime configuration check")
+
+	engineType := stack.EngineTypeDockerStandalone
+	if agentRunsOnSwarm {
+		engineType = stack.EngineTypeDockerSwarm
+	}
+
+	if !agentRunsOnSwarm || agentRunsOnLeaderNode {
+		if err := manager.stackManager.SetEngineType(engineType); err != nil {
+			return err
+		}
+
+		manager.pollService.Start()
+
+		return manager.stackManager.Start()
+	}
+
+	manager.pollService.Stop()
+	manager.stackManager.Stop()
+
+	return nil
+}
+
+func (manager *Manager) CreateEdgeConfig(config *client.EdgeConfig) error {
+	baseDir := filesystem.JoinPaths(agent.HostRoot, config.BaseDir)
+
+	if err := filesystem.DecodeDirEntries(config.DirEntries); err != nil {
+		return err
+	}
+
+	for _, file := range config.DirEntries {
+		log.Debug().Str("base", baseDir).Str("path", file.Name).Msg("creating file")
+	}
+
+	return filesystem.PersistDir(baseDir, config.DirEntries)
+}
+
+func (manager *Manager) DeleteEdgeConfig(config *client.EdgeConfig) error {
+	baseDir := filesystem.JoinPaths(agent.HostRoot, config.BaseDir)
+
+	for _, dirEntry := range config.DirEntries {
+		path := filesystem.JoinPaths(baseDir, dirEntry.Name)
+
+		if !dirEntry.IsFile {
+			continue
+		}
+
+		log.Debug().Str("base", baseDir).Str("path", dirEntry.Name).Msg("removing file")
+
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			log.Error().Err(err).Str("base", baseDir).Str("path", dirEntry.Name).Msg("failed to remove file")
+
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (manager *Manager) UpdateEdgeConfig(config *client.EdgeConfig) error {
+	if err := manager.DeleteEdgeConfig(config.Prev); err != nil {
+		return err
+	}
+
+	return manager.CreateEdgeConfig(config)
+}

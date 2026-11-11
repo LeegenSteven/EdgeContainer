@@ -1,0 +1,129 @@
+version: "2"
+
+run:
+  allow-parallel-runners: true
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - copyloopvar
+    - depguard
+    - errcheck
+    - errorlint
+    - forbidigo
+    - govet
+    - ineffassign
+    - intrange
+    - perfsprint
+    - staticcheck
+    - unused
+    - mirror
+    - durationcheck
+    - errorlint
+    - govet
+    - unconvert
+    - usetesting
+    - zerologlint
+    - testifylint
+    - modernize
+    - unconvert
+    - unused
+    - zerologlint
+    - exptostd
+  settings:
+    staticcheck:
+      checks: ["all", "-SA1019", "-ST1003", "-ST1005", "-ST1016", "-QF1002", "-QF1003", "-QF1008"]
+    depguard:
+      rules:
+        main:
+          files:
+            - '!**/*_test.go'
+          deny:
+            - pkg: golang.org/x/exp
+              desc: exp is not allowed
+            - pkg: github.com/portainer/libcrypto
+              desc: use github.com/portainer/portainer/pkg/libcrypto
+            - pkg: github.com/portainer/libhttp
+              desc: use github.com/portainer/portainer/pkg/libhttp
+            - pkg: golang.org/x/crypto
+              desc: golang.org/x/crypto is not allowed because of FIPS mode
+            - pkg: software.sslmate.com/src/go-pkcs12
+              desc: pkcs12 uses non-FIPS primitives (DES/SHA-1/PBKDF2); not allowed because of FIPS mode
+            - pkg: github.com/ProtonMail/go-crypto/openpgp
+              desc: github.com/ProtonMail/go-crypto/openpgp is not allowed because of FIPS mode
+            - pkg: helm.sh/helm/v3/pkg/provenance
+              desc: chart provenance verification uses openpgp; not allowed because of FIPS mode
+            - pkg: helm.sh/helm/v4/pkg/provenance
+              desc: chart provenance verification uses openpgp; not allowed because of FIPS mode
+            - pkg: github.com/prometheus/exporter-toolkit
+              desc: exporter-toolkit basic auth uses bcrypt; not allowed because of FIPS mode
+            - pkg: github.com/cosi-project/runtime
+              desc: github.com/cosi-project/runtime is not allowed because of FIPS mode
+            - pkg: gopkg.in/yaml.v2
+              desc: use go.yaml.in/yaml/v3 instead
+            - pkg: gopkg.in/yaml.v3
+              desc: use go.yaml.in/yaml/v3 instead
+            - pkg: github.com/golang-jwt/jwt/v4
+              desc: use github.com/golang-jwt/jwt/v5 instead
+            - pkg: github.com/mitchellh/mapstructure
+              desc: use github.com/go-viper/mapstructure/v2 instead
+            - pkg: gopkg.in/alecthomas/kingpin.v2
+              desc: use github.com/alecthomas/kingpin/v2 instead
+            - pkg: github.com/jcmturner/gokrb5$
+              desc: use github.com/jcmturner/gokrb5/v8 instead
+            - pkg: github.com/gofrs/uuid
+              desc: use github.com/google/uuid
+            - pkg: github.com/Masterminds/semver$
+              desc: use github.com/Masterminds/semver/v3
+            - pkg: github.com/blang/semver
+              desc: use github.com/Masterminds/semver/v3
+            - pkg: github.com/coreos/go-semver
+              desc: use github.com/Masterminds/semver/v3
+            - pkg: github.com/hashicorp/go-version
+              desc: use github.com/Masterminds/semver/v3
+            - pkg: github.com/orcaman/concurrent-map
+              desc: use sync.Map instead
+    forbidigo:
+      forbid:
+        - pattern: ^tls\.Config$
+          msg: Use crypto.CreateTLSConfiguration() instead
+        - pattern: ^tls\.Config\.(InsecureSkipVerify|MinVersion|MaxVersion|CipherSuites|CurvePreferences)$
+          msg: Do not set this field directly, use crypto.CreateTLSConfiguration() instead
+        - pattern: ^object\.(Commit|Tag)\.Verify$
+          msg: "Not allowed because of FIPS mode"
+        - pattern: ^action\.(ChartPathOptions|Dependency)\.Verify$
+          msg: "Chart provenance verification uses openpgp. Not allowed because of FIPS mode"
+        - pattern: ^downloader\.(Manager|ChartDownloader)\.Verify$
+          msg: "Chart provenance verification uses openpgp. Not allowed because of FIPS mode"
+        - pattern: ^downloader\.(VerifyChart|VerifyAlways|VerifyIfPossible|VerifyLater)$
+          msg: "Chart provenance verification uses openpgp. Not allowed because of FIPS mode"
+        - pattern: ^ldap\.Conn\.(NTLMBind|NTLMBindWithHash|NTLMChallengeBind|NTLMUnauthenticatedBind|MD5Bind|DigestMD5Bind)$
+          msg: "NTLM and DIGEST-MD5 binds use MD4/MD5/DES/RC4. Not allowed because of FIPS mode"
+        - pattern: ^ldap\.Conn\.(GSSAPIBind|GSSAPIBindRequest|GSSAPIBindRequestWithAPOptions)$
+          msg: "GSSAPI/Kerberos bind is not allowed because of FIPS mode"
+        - pattern: ^(types\.SystemContext\.)?(DockerDaemonInsecureSkipTLSVerify|DockerInsecureSkipTLSVerify|OCIInsecureSkipTLSVerify)$
+          msg: "Not allowed because of FIPS mode"
+        - pattern: ^(chclient\.TLSConfig\.)?SkipVerify$
+          msg: "Not allowed because of FIPS mode"
+        - pattern: ^git\.PlainClone(Context|WithOptions)?$
+          msg: "Use git.CloneContext with NewNoSymlinkFS to prevent symlink traversal attacks"
+        - pattern: ^(filepath|path)\.Join$
+          msg: "Use filesystem.JoinPaths() from github.com/portainer/portainer/api/filesystem to prevent path traversal attacks"
+      analyze-types: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+    paths:
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  exclusions:
+    generated: lax
+    paths:
+      - third_party$
+      - builtin$
+      - examples$

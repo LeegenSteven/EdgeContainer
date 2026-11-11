@@ -1,0 +1,404 @@
+package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	gohttp "net/http"
+	goos "os"
+	"os/signal"
+	"syscall"
+	"time"
+
+	"github.com/portainer/agent"
+	"github.com/portainer/agent/crypto"
+	"github.com/portainer/agent/docker"
+	"github.com/portainer/agent/edge"
+	"github.com/portainer/agent/edge/aws"
+	"github.com/portainer/agent/edge/health"
+	httpEdge "github.com/portainer/agent/edge/http"
+	"github.com/portainer/agent/edge/registry"
+	"github.com/portainer/agent/exec"
+	"github.com/portainer/agent/ghw"
+	"github.com/portainer/agent/http"
+	"github.com/portainer/agent/internals/updates"
+	"github.com/portainer/agent/kubernetes"
+	"github.com/portainer/agent/net"
+	"github.com/portainer/agent/os"
+	cluster "github.com/portainer/agent/serf"
+	"github.com/portainer/portainer/pkg/fips"
+
+	"github.com/rs/zerolog"
+	"github.com/rs/zerolog/log"
+	"github.com/rs/zerolog/pkgerrors"
+)
+
+func init() {
+	zerolog.ErrorStackFieldName = "stack_trace"
+	zerolog.ErrorStackMarshaler = pkgerrors.MarshalStack
+	zerolog.TimeFieldFormat = zerolog.TimeFormatUnixNano
+
+	log.Logger = log.Logger.With().Caller().Stack().Logger()
+	// Reset the health status to unhealthy at startup, to avoid false positives for health checks
+	_ = health.SetUnHealthy()
+}
+
+func main() {
+	// Generic
+
+	options, err := parseOptions()
+	if err != nil {
+		log.Fatal().Err(err).Msg("invalid agent configuration")
+	}
+
+	setLoggingLevel(options.LogLevel)
+	setLoggingMode(options.LogMode)
+
+	if options.EdgeAsyncMode && !options.EdgeMode {
+		log.Fatal().Msg("edge Async mode cannot be enabled if Edge Mode is disabled")
+	}
+
+	if options.SSLCert != "" && options.SSLKey != "" && options.CertRetryInterval > 0 {
+		edge.BlockUntilCertificateIsReady(options.SSLCert, options.SSLKey, options.CertRetryInterval)
+	}
+
+	systemService := ghw.NewSystemService(agent.HostRoot)
+	containerPlatform := os.DetermineContainerPlatform()
+	runtimeConfiguration := &agent.RuntimeConfig{
+		AgentPort: options.AgentServerPort,
+	}
+
+	var clusterService agent.ClusterService
+	var dockerInfoService agent.DockerInfoService
+	var advertiseAddr string
+	var kubeClient *kubernetes.KubeClient
+
+	var updaterCleaner updates.GhostUpdaterCleaner
+	ctx := context.Background()
+
+	fips.InitFIPS(options.FIPSMode)
+	if fips.FIPSMode() {
+		log.Info().Msg("Starting with FIPS mode enabled")
+	}
+
+	if options.EdgeConnectivityCheck {
+		if edge.HasServerConnectivity(options) {
+			goos.Exit(0)
+		}
+		goos.Exit(1)
+	}
+
+	// !Generic
+
+	// Docker & Podman
+
+	if containerPlatform == agent.PlatformDocker || containerPlatform == agent.PlatformPodman {
+		if containerPlatform == agent.PlatformPodman {
+			log.Info().Msg("agent running on Podman platform")
+		} else {
+			log.Info().Msg("agent running on Docker platform")
+		}
+
+		dockerInfoService = docker.NewInfoService()
+
+		runtimeConfiguration, err = dockerInfoService.GetRuntimeConfigurationFromDockerEngine()
+		if err != nil {
+			log.Fatal().Err(err).Msg("unable to retrieve information from Docker")
+		}
+
+		runtimeConfiguration.AgentPort = options.AgentServerPort
+		log.Debug().Str("member_tags", fmt.Sprintf("%+v", runtimeConfiguration)).Msg("")
+
+		clusterMode := false
+		if runtimeConfiguration.DockerConfig.EngineType == agent.EngineTypeSwarm {
+			clusterMode = true
+			log.Info().Msg("agent running on a Swarm cluster node. Running in cluster mode")
+		}
+
+		containerName, err := os.GetHostName()
+		if err != nil {
+			log.Fatal().Err(err).Msg("unable to retrieve container name")
+		}
+
+		advertiseAddr, err = dockerInfoService.GetContainerIpFromDockerEngine(containerName, clusterMode)
+		if err != nil {
+			log.Warn().Str("host_flag", options.AgentServerAddr).Err(err).
+				Msg("unable to retrieve agent container IP address, using host flag instead")
+
+			advertiseAddr = options.AgentServerAddr
+		}
+
+		if containerPlatform == agent.PlatformDocker && options.EdgeMetaFields.UpdateID != 0 {
+			updates.SetUpdateID(options.EdgeMetaFields.UpdateID)
+			updaterCleaner = updates.NewDockerUpdaterCleaner(updates.UpdateID())
+		}
+
+		if containerPlatform == agent.PlatformDocker && clusterMode {
+			clusterAddr := options.ClusterAddress
+			if clusterAddr == "" {
+				serviceName, err := dockerInfoService.GetServiceNameFromDockerEngine(containerName)
+				if err != nil {
+					log.Fatal().Err(err).Msg("unable to retrieve agent service name from Docker")
+				}
+
+				clusterAddr = "tasks." + serviceName
+			}
+
+			clusterService = cluster.NewSwarmClusterService(runtimeConfiguration, clusterAddr)
+
+			// TODO: Workaround. looks like the Docker DNS cannot find any info on tasks.<service_name>
+			// sometimes... Waiting a bit before starting the discovery (at least 3 seconds) seems to solve the problem.
+			time.Sleep(3 * time.Second)
+
+			joinAddr, err := net.LookupIPAddresses(clusterAddr)
+			if err != nil {
+				log.Fatal().Str("host", clusterAddr).Err(err).
+					Msg("unable to retrieve a list of IP associated to the host")
+			}
+
+			if err := clusterService.Create(advertiseAddr, joinAddr, options.ClusterProbeTimeout, options.ClusterProbeInterval); err != nil {
+				log.Fatal().Err(err).Msg("unable to create cluster")
+			}
+
+			log.Debug().
+				Str("agent_port", options.AgentServerPort).
+				Str("cluster_address", clusterAddr).
+				Str("advertise_address", advertiseAddr).
+				Str("probe_timeout", options.ClusterProbeTimeout.String()).
+				Str("probe_interval", options.ClusterProbeInterval.String()).
+				Msg("")
+
+			defer clusterService.Leave()
+		}
+	}
+
+	// !Docker
+
+	// Kubernetes
+	var kubernetesDeployer *exec.KubernetesDeployer
+	if containerPlatform == agent.PlatformKubernetes {
+		log.Info().Msg("agent running on Kubernetes platform")
+
+		kubeClient, err = kubernetes.NewKubeClient()
+		if err != nil {
+			log.Fatal().Err(err).Msg("unable to create Kubernetes client")
+		}
+
+		kubernetesDeployer = exec.NewKubernetesDeployer(kubeClient)
+
+		clusterService = cluster.NewClusterService(runtimeConfiguration)
+
+		advertiseAddr = os.GetKubernetesPodIP()
+		if advertiseAddr == "" {
+			log.Fatal().Err(err).Msg("KUBERNETES_POD_IP env var must be specified when running on Kubernetes")
+		}
+
+		clusterAddr := options.ClusterAddress
+		if clusterAddr == "" {
+			clusterAddr = "s-portainer-agent-headless"
+		}
+
+		// TODO: Workaround. Kubernetes only adds entries in the DNS for running containers. We need to wait a bit
+		// for the container to be considered running by Kubernetes and an entry to be added to the DNS.
+		time.Sleep(3 * time.Second)
+
+		joinAddr, err := net.LookupIPAddresses(clusterAddr)
+		if err != nil {
+			log.Fatal().Str("host", clusterAddr).Err(err).
+				Msg("unable to retrieve a list of IP associated to the host")
+		}
+
+		if err := clusterService.Create(advertiseAddr, joinAddr, options.ClusterProbeTimeout, options.ClusterProbeInterval); err != nil {
+			log.Fatal().Err(err).Msg("unable to create cluster")
+		}
+
+		log.Debug().
+			Str("agent_port", options.AgentServerPort).
+			Str("cluster_address", clusterAddr).
+			Str("advertise_address", advertiseAddr).
+			Str("probe_timeout", options.ClusterProbeTimeout.String()).
+			Str("probe_interval", options.ClusterProbeInterval.String()).
+			Msg("")
+
+		defer clusterService.Leave()
+	}
+	// !Kubernetes
+
+	// Clean the updater
+	if updaterCleaner != nil {
+		go func() {
+			if err := updates.Remove(ctx, updaterCleaner); err != nil {
+				log.Warn().Err(err).Msg("unable to clean the updater")
+			}
+		}()
+	}
+	// !Clean the updater
+
+	// Security
+	signatureService := crypto.NewECDSAService(options.SharedSecret)
+
+	if !options.EdgeMode {
+		tlsService := crypto.TLSService{}
+
+		if err := tlsService.GenerateCertsForHost(advertiseAddr); err != nil {
+			log.Fatal().Err(err).Msg("unable to generate self-signed certificates")
+		}
+	}
+
+	// !Security
+
+	// Edge
+	var edgeManager *edge.Manager
+	if options.EdgeMode {
+		edgeManagerParameters := &edge.ManagerParameters{
+			Options:           options,
+			AdvertiseAddr:     advertiseAddr,
+			ClusterService:    clusterService,
+			DockerInfoService: dockerInfoService,
+			ContainerPlatform: containerPlatform,
+			KubeClient:        kubeClient,
+		}
+
+		edgeManager = edge.NewManager(edgeManagerParameters)
+
+		edgeKey, err := edge.RetrieveEdgeKey(options.EdgeKey, clusterService, options.DataPath)
+		if err != nil {
+			log.Error().Err(err).Msg("unable to retrieve Edge key")
+		}
+
+		if edgeKey != "" {
+			log.Debug().Msg("edge key found in environment. Associating Edge key")
+
+			if err := edgeManager.SetKey(edgeKey); err != nil {
+				log.Fatal().Err(err).Msg("unable to associate Edge key")
+			}
+
+			if err := edgeManager.Start(); err != nil {
+				log.Fatal().Err(err).Msg("Unable to start Edge manager")
+			}
+		} else {
+			log.Debug().Msg("edge key not specified. Serving Edge UI")
+			serveEdgeUI(edgeManager, options.EdgeUIServerAddr, options.EdgeUIServerPort)
+		}
+	}
+
+	// !Edge
+
+	// API
+
+	config := &http.APIServerConfig{
+		Addr:                 options.AgentServerAddr,
+		Port:                 options.AgentServerPort,
+		SystemService:        systemService,
+		ClusterService:       clusterService,
+		EdgeManager:          edgeManager,
+		SignatureService:     signatureService,
+		RuntimeConfiguration: runtimeConfiguration,
+		AgentOptions:         options,
+		KubeClient:           kubeClient,
+		KubernetesDeployer:   kubernetesDeployer,
+		ContainerPlatform:    containerPlatform,
+	}
+
+	if options.EdgeMode {
+		config.Addr = advertiseAddr
+	}
+
+	awsConfig := aws.ExtractAwsConfig(options)
+	if err := registry.StartRegistryServer(edgeManager, awsConfig); err != nil {
+		log.Fatal().Err(err).Msg("unable to start registry server")
+	}
+
+	if err := startAPIServer(config, options.EdgeMode); err != nil && !errors.Is(err, gohttp.ErrServerClosed) {
+		log.Fatal().Err(err).Msg("unable to start Agent API server")
+	}
+
+	// !API
+
+	sigs := make(chan goos.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	s := <-sigs
+
+	log.Debug().Stringer("signal", s).Msg("shutting down")
+}
+
+func startAPIServer(config *http.APIServerConfig, edgeMode bool) error {
+	server := http.NewAPIServer(config)
+
+	return server.Start(edgeMode)
+}
+
+func parseOptions() (*agent.Options, error) {
+	optionParser := os.NewEnvOptionParser()
+	return optionParser.Options()
+}
+
+func setLoggingLevel(level string) {
+	switch level {
+	case "ERROR":
+		zerolog.SetGlobalLevel(zerolog.ErrorLevel)
+	case "WARN":
+		zerolog.SetGlobalLevel(zerolog.WarnLevel)
+	case "INFO":
+		zerolog.SetGlobalLevel(zerolog.InfoLevel)
+	case "DEBUG":
+		zerolog.SetGlobalLevel(zerolog.DebugLevel)
+	}
+}
+
+func setLoggingMode(mode string) {
+	switch mode {
+	case "PRETTY":
+		log.Logger = log.Output(zerolog.ConsoleWriter{
+			Out:           goos.Stderr,
+			TimeFormat:    "2006/01/02 03:04:05.999PM",
+			FormatMessage: formatMessage})
+	case "NOCOLOR":
+		log.Logger = log.Output(zerolog.ConsoleWriter{
+			Out:           goos.Stderr,
+			TimeFormat:    "2006/01/02 03:04:05.999PM",
+			FormatMessage: formatMessage,
+			NoColor:       true,
+		})
+	case "JSON":
+		log.Logger = log.Output(goos.Stderr)
+	}
+}
+
+func formatMessage(i any) string {
+	if i == nil {
+		return ""
+	}
+
+	return fmt.Sprintf("%s |", i)
+}
+
+func serveEdgeUI(edgeManager *edge.Manager, serverAddr, serverPort string) {
+	edgeServer := httpEdge.NewEdgeServer(edgeManager)
+
+	go func() {
+		log.Info().Str("server_address", serverAddr).Str("server_port", serverPort).Msg("Starting Edge UI server")
+
+		if err := edgeServer.Start(serverAddr, serverPort); err != nil {
+			log.Fatal().Err(err).Msg("Unable to start Edge server")
+		}
+
+		log.Info().Msg("Edge server shutdown")
+	}()
+
+	go func() {
+		time.Sleep(agent.DefaultEdgeSecurityShutdown * time.Minute)
+
+		if edgeManager.IsKeySet() {
+			return
+		}
+
+		log.Info().
+			Int("shutdown_minutes", agent.DefaultEdgeSecurityShutdown).
+			Msg("Shutting down Edge UI server as no key was specified after shutdown_minutes")
+
+		if err := edgeServer.Shutdown(); err != nil {
+			log.Warn().Err(err).Msg("failed to shutdown Edge UI server")
+		}
+	}()
+}
