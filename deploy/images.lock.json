@@ -1,0 +1,17 @@
+{
+  "source": "Public official container image references",
+  "images": {
+    "server": {
+      "reference": "portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e",
+      "platform": "linux/amd64"
+    },
+    "agent": {
+      "reference": "portainer/agent:2.45.3@sha256:06cae51b13391a71a612f7c2a5ca478d207fbd8d7bec80bb85252370899f9927",
+      "platform": "linux/arm64"
+    },
+    "acceptance": {
+      "reference": "traefik/whoami:v1.10.3@sha256:7865582efaa90720f146cbdb411756b5e85dafcb0f608396a48c4d2d0b1218ad",
+      "platform": "linux/arm64"
+    }
+  }
+}

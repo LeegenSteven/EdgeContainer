@@ -1,0 +1,25 @@
+/* Keep the existing layout and theme; use readable CJK fallback fonts. */
+html[lang="zh-CN"] body {
+  font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", "Noto Sans CJK SC", sans-serif;
+}
+
+.edgestack-brand-logo {
+  object-fit: contain;
+  filter: none !important;
+}
+
+.simple-box-logo.edgestack-brand-logo {
+  width: 300px;
+  max-width: 85%;
+  height: auto;
+}
+
+html[lang="zh-CN"] #sideview a,
+html[lang="zh-CN"] #sideview button {
+  letter-spacing: normal;
+}
+
+html[lang="zh-CN"] .control-label {
+  line-height: 1.6;
+}

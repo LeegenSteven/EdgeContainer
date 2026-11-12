@@ -1,0 +1,17 @@
+# Optional UI override. Install as compose.override.yaml beside compose.yaml.
+# Build and install the UI files before enabling these read-only mounts.
+services:
+  portainer:
+    volumes:
+      - type: bind
+        source: ./ui/index.html
+        target: /public/index.html
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ./ui/edgestack
+        target: /public/edgestack
+        read_only: true
+        bind:
+          create_host_path: false

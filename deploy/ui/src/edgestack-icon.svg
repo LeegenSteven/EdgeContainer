@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="48" height="48" viewBox="0 0 48 48" role="img" aria-label="EdgeStack.io">
+  <rect width="48" height="48" rx="11" fill="#14233e"/>
+  <g fill="none" stroke="#6aafff" stroke-width="2.6" stroke-linejoin="round">
+    <path d="m8 16 16-8 16 8-16 8z"/>
+    <path d="m8 23 16 8 16-8M8 30l16 8 16-8"/>
+  </g>
+</svg>

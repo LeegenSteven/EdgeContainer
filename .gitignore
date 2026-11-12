@@ -1,0 +1,11 @@
+.DS_Store
+**/.env
+**/.env.*
+!**/.env.example
+.local/
+*.pem
+*.key
+__pycache__/
+# Generated demo deliverables and machine-specific evidence stay local.
+/deliverables/
+/docs/evidence/

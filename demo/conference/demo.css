@@ -1,0 +1,24 @@
+#demo-tools{position:fixed;right:20px;bottom:18px;z-index:20000;font:13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei",sans-serif;color:#e8ecf4}
+#demo-tools button,#demo-tools select{font:inherit;border:1px solid #455267;border-radius:7px;background:#263244;color:#e8ecf4;padding:7px 11px;cursor:pointer}
+#demo-tools #demo-toggle{box-shadow:0 4px 24px #0006;background:#17243b;border-color:#406a9f;color:#78b4ff}
+#demo-toggle span{color:#adb9c9;font-size:11px;margin-left:8px}
+#demo-panel{position:absolute;bottom:48px;right:0;width:310px;background:#1e2735;border:1px solid #455267;border-radius:12px;padding:18px;box-shadow:0 14px 50px #0007}
+#demo-panel[hidden]{display:none!important}
+#demo-panel header{display:flex;justify-content:space-between;align-items:center;font-size:16px;margin-bottom:10px}
+#demo-panel header button{border:0;padding:0 6px;font-size:22px;background:transparent}
+#demo-panel label{display:block;margin:13px 0;font-size:12px;font-weight:400}
+#demo-panel select{display:block;width:100%;margin-top:5px}
+#demo-panel input[type=range]{display:inline-block;width:82%;margin:9px 5px 0 0;accent-color:#589cff}
+#demo-panel output{font-size:12px;color:#93c5ff}
+#demo-panel>button{display:block;width:100%;margin-top:8px}
+#demo-panel .demo-danger{color:#ffb3b5;border-color:#884b57}
+.demo-muted{font-size:12px;color:#a7b3c5;margin:10px 0}
+.demo-actions{display:flex;gap:5px;flex-wrap:wrap;margin:15px 0}
+#demo-tools .demo-actions button{padding:5px 8px;font-size:12px}
+.demo-overlay{position:fixed;inset:0;z-index:2147483000;background:#030912a8;display:flex;align-items:center;justify-content:center;backdrop-filter:blur(3px);padding:24px;color:#e8ecf4;font:14px/1.9 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif}
+.demo-dialog{width:min(660px,90vw);max-height:85vh;overflow:auto;background:#202a3b;border:1px solid #53627b;border-radius:14px;padding:30px;position:relative;box-shadow:0 20px 100px #0008}
+.demo-dialog h2{font-size:22px;font-weight:600;margin:0 0 16px}
+.demo-dialog code{display:block;background:#111b2b;padding:14px;border-radius:7px;white-space:pre-wrap;overflow-wrap:anywhere;color:#a8ccff;max-height:250px;overflow:auto}
+.demo-close{position:absolute;right:15px;top:12px;border:0;background:none;color:#d8e2f1;font-size:25px;cursor:pointer}
+.demo-callout{padding:13px 17px;background:#16314b;border-left:3px solid #5ca7ff;border-radius:4px;margin:16px 0}
+@media print{#demo-tools{display:none}}
