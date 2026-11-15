@@ -1,0 +1,46 @@
+name: edgestack-business-events
+
+# Independent from the Edge Agent. The producer writes this dedicated outbox;
+# this adapter receives read-only access and can write only its private state.
+services:
+  business-event-adapter:
+    image: ${BUSINESS_ADAPTER_IMAGE:-python:3.11-slim-bookworm}
+    command: ["python3", "/app/adapter.py"]
+    environment:
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      INGEST_BASE_URL: ${INGEST_BASE_URL:?Set Server origin, preferably HTTPS}
+      INGEST_TOKEN_FILE: /run/secrets/ingest_token
+      INGEST_CA_FILE: ${INGEST_CA_FILE:-}
+      INGEST_CERT_SHA256: ${INGEST_CERT_SHA256:-}
+      EVENT_DEVICE_ID: ${EVENT_DEVICE_ID:?Set provisioned worker device ID}
+      EVENT_SOURCE_ID: ${EVENT_SOURCE_ID:?Set provisioned source ID}
+      EVENT_TASK_ID: ${EVENT_TASK_ID:?Set provisioned task ID}
+      EVENT_OUTBOX: /outbox
+      ADAPTER_STATE: /state
+      MAX_QUEUE_EVENTS: ${MAX_QUEUE_EVENTS:-10000}
+      MAX_QUEUE_BYTES: ${MAX_QUEUE_BYTES:-33554432}
+    volumes:
+      - ../../worker/business-events:/app:ro
+      - ${EVENT_OUTBOX_DIR:?Set dedicated producer outbox directory}:/outbox:ro
+      - business_event_state:/state
+      # For custom CA mode, set INGEST_CA_FILE=/run/certs/server-ca.pem and
+      # uncomment this explicit read-only mount (not needed for leaf-pin mode):
+      # - ${INGEST_CA_PATH:?Set trusted CA PEM path}:/run/certs/server-ca.pem:ro
+    secrets:
+      - ingest_token
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: [no-new-privileges:true]
+    tmpfs: [/tmp:size=1m,noexec,nosuid]
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options: {max-size: "1m", max-file: "2"}
+
+secrets:
+  ingest_token:
+    file: ${INGEST_TOKEN_PATH:?Set path to independent scoped ingest token file}
+
+volumes:
+  business_event_state:

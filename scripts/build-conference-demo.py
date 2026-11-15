@@ -29,6 +29,9 @@ def safe_script(code):
 
 def build(public, output):
     html = (public / 'index.html').read_text()
+    source_index_sha256 = hashlib.sha256(html.encode()).hexdigest()
+    version_match = re.search(r'data-edgestack-ui="([^"]+)"', html)
+    overlay_version = version_match.group(1) if version_match else None
     html = re.sub(r'<!--\[if.*?<!\[endif\]-->', '', html, flags=re.S)
     scripts = re.findall(r'<script\b[^>]*\bsrc="([^"]+)"[^>]*></script>', html)
     styles = re.findall(r'<link\b[^>]*href="([^"]+\.css)"[^>]*>', html)
@@ -85,6 +88,7 @@ def build(public, output):
         '<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + csp + '">'
         '<style>\n' + (ROOT / 'demo/conference/demo.css').read_text() + '\n</style>'
         '<script>window.__EDGESTACK_DEMO_ASSETS__=' + json.dumps(assets, separators=(',', ':')) + ';\n' +
+        safe_script((ROOT / 'demo/conference/business-fixture.js').read_text()) + '\n' +
         safe_script((ROOT / 'demo/conference/demo-runtime.js').read_text()) + '\n</script>'
     )
     html = html.replace('<head>', '<head>' + boot, 1)
@@ -96,7 +100,7 @@ def build(public, output):
     html = html.replace('<title>EdgeStack.io</title>', '<title>EdgeStack.io · 会议演示</title>')
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html)
-    info = {'file': output.name, 'size_bytes': output.stat().st_size, 'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'upstream': 'Portainer CE 2.45.3', 'offline': True, 'public_source_sha256': hashes}
+    info = {'file': output.name, 'size_bytes': output.stat().st_size, 'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'upstream': 'Portainer CE 2.45.3', 'source_overlay_version': overlay_version, 'source_public_index_sha256': source_index_sha256, 'offline': True, 'business_fixture': {'schema': 2, 'records': 'fictional local conference fixtures', 'summary_provider': 'local example; no DeepSeek cloud call', 'default_persona': 'user'}, 'simulator_sources_sha256': {name: hashlib.sha256((ROOT / 'demo/conference' / name).read_bytes()).hexdigest() for name in ['business-fixture.js', 'demo-runtime.js', 'demo.css']}, 'public_source_sha256': hashes}
     print(json.dumps({k: v for k, v in info.items() if k != 'public_source_sha256'}, ensure_ascii=False, indent=2))
     (output.parent / '演示构建记录.json').write_text(json.dumps(info, ensure_ascii=False, indent=2) + '\n')
 

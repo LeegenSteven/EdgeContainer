@@ -99,6 +99,11 @@
   try { db = JSON.parse(localStorage.getItem(KEY)); } catch { /* local file storage may be unavailable */ }
   if (!db || db.schema !== 1) db = seed();
   function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* in-memory session remains usable */ } }
+  const business=window.EdgeStackDemoBusiness.create({db,save,audit,jsonResponse});
+  if(!db.demoPersona)db.demoPersona='user';
+  if(!db.users.some(u=>u.Id===10001))db.users.push({...clone(db.users[0]),Id:10001,Username:'空间体验者',Role:2,RoleName:'Standard User',ThemeSettings:{color:'light'}});
+  save();
+  const currentUser=()=>db.demoPersona==='admin'?db.users[0]:db.users.find(u=>u.Id===10001);
   function audit(action, target) { db.audit.unshift({ time: iso(), action, target }); db.audit = db.audit.slice(0, 120); save(); }
   const nextId = (items) => Math.max(0, ...items.map((x) => x.Id || x.ID || 0)) + 1;
 
@@ -125,7 +130,7 @@
     }));
   }
   function listContainers() {
-    return db.containers.map((c) => ({ Id: c.Id, Names: c.Names, Image: c.Config.Image, ImageID: c.Image, Command: (c.Config.Cmd || []).join(' '), Created: Math.floor(new Date(c.Created).getTime() / 1000), Ports: Object.entries(c.NetworkSettings.Ports || {}).flatMap(([p, v]) => (v || []).map((x) => ({ IP: x.HostIp, PrivatePort: +p.split('/')[0], PublicPort: +x.HostPort, Type: p.split('/')[1] }))), Labels: c.Config.Labels, State: c.State.Paused ? 'paused' : c.State.Status, Status: c.State.Running ? 'Up 1 day' + (c.State.Health.Status === 'healthy' ? ' (healthy)' : '') : 'Exited (0) 1 day ago', HostConfig: { NetworkMode: c.HostConfig.NetworkMode }, NetworkSettings: { Networks: c.NetworkSettings.Networks }, Mounts: c.Mounts, Portainer: c.Portainer }));
+    return db.containers.map((c) => ({ Id: c.Id, Names: c.Names, Image: c.Config.Image, ImageID: c.Image, Command: (c.Config.Cmd || []).join(' '), Created: Math.floor(new Date(c.Created).getTime() / 1000), Ports: Object.entries(c.NetworkSettings.Ports || {}).flatMap(([p, v]) => (v || []).map((x) => ({ IP: x.HostIp, PrivatePort: +p.split('/')[0], PublicPort: +x.HostPort, Type: p.split('/')[1] }))), Labels: c.Config.Labels, State: c.State.Paused ? 'paused' : c.State.Status, Status: c.State.Running ? 'Up 1 day' + (c.State.Health?.Status === 'healthy' ? ' (healthy)' : '') : 'Exited (0) 1 day ago', HostConfig: { NetworkMode: c.HostConfig.NetworkMode }, NetworkSettings: { Networks: c.NetworkSettings.Networks }, Mounts: c.Mounts, Portainer: c.Portainer }));
   }
   function jsonResponse(data, status = 200, extra = {}) {
     return { status, data, headers: { 'content-type': 'application/json; charset=utf-8', 'x-portainer-agent': '1', 'portainer-agent-api-version': '2', 'api-version': '1.56', ...extra } };
@@ -262,6 +267,28 @@
   function deployStack(stack, content) {
     const text = content || db.compose;
     stack.StackFileContent = text;
+    // JSON is a YAML subset and is used by the validated workflow recipes.
+    if (text.trim().startsWith('{')) {
+      const spec = JSON.parse(text);
+      for (const [name, service] of Object.entries(spec.services || {})) {
+        const cname = stack.Name + '-' + name + '-1';
+        const port = String(service.ports?.[0] || '0:8080').split(':');
+        let c = db.containers.find(x => x.Name === '/' + cname);
+        if (!c) { c = makeContainer(cname, service.image, true, +port[0], 30 + db.containers.length); db.containers.push(c); }
+        c.Config.Image = service.image;
+        c.Config.Labels = { ...c.Config.Labels, ...service.labels, 'com.docker.compose.project': stack.Name, 'com.docker.compose.service': name, 'io.portainer.edge_stack_id': String(stack.Id) };
+        c.NetworkSettings.Ports = { [port[1] + '/tcp']: [{HostIp:'0.0.0.0', HostPort:port[0]}] };
+        if (!service.healthcheck) delete c.State.Health;
+        c.Mounts = [];
+        for (const mapping of service.volumes || []) {
+          const [key, destination] = mapping.split(':');
+          const volume = spec.volumes[key];
+          if (!db.volumes.some(v => v.Name === volume.name)) db.volumes.push({Name:volume.name,Driver:'local',Mountpoint:'/demo/volumes/'+volume.name,Labels:{},Scope:'local'});
+          c.Mounts.push({Type:'volume',Name:volume.name,Source:'/demo/volumes/'+volume.name,Destination:destination,RW:true});
+        }
+      }
+      save(); return;
+    }
     const services = [...text.matchAll(/^  ([a-zA-Z][\w-]*):\s*$/gm)].map((x) => x[1]);
     const image = (text.match(/image:\s*["']?([^\s"']+)/) || [])[1] || 'traefik/whoami:v1.10.3';
     for (const name of services.length ? services : ['app']) {
@@ -286,6 +313,7 @@
     else if (path.startsWith('/api')) path = path.slice(4);
     if (path.includes('/locales/')) return jsonResponse({});
     if (!path.startsWith('/')) path = '/' + path;
+    const businessResponse=business.route(method,path,q,body);if(businessResponse)return businessResponse;
     if (path === '/motd') return jsonResponse({ Title: '', Message: '', Content: '', Hash: 'demo', Style: '', Dismissible: true });
     if (path === '/status' || path === '/system/status') return jsonResponse({ Edition: 'CE', Version: '2.45.3', InstanceID: 'EDGESTACK-CONFERENCE-LOCAL', Snapshot: false });
     if (path === '/version' || path === '/system/version') return jsonResponse({ UpdateAvailable: false, LatestVersion: '2.45.3', ServerVersion: '2.45.3', VersionSupport: 'LTS', DatabaseVersion: '2.45.3', Build: { BuildNumber: 'meeting-demo', ImageTag: '2.45.3', NodejsVersion: '22.22.1', PnpmVersion: '10.26.2', WebpackVersion: '5', GoVersion: '1.25', GitCommit: '会议演示' }, Dependencies: { DockerVersion: '29.9.3', HelmVersion: '3.18', KubectlVersion: '1.34', ComposeVersion: '5.7.0' }, Runtime: {} });
@@ -298,15 +326,15 @@
     if (path === '/settings/ssl' || path === '/ssl') return method === 'GET' ? jsonResponse({ CertPath: '', KeyPath: '', HTTPEnabled: true, HTTPSOnly: false, SSLCertPath: '', SSLKeyPath: '' }) : jsonResponse({});
     if (path === '/settings/experimental') return jsonResponse({});
     if (path === '/auth/logout') { db.loggedIn = false; save(); return jsonResponse(null, 204); }
-    if (path === '/auth') { db.loggedIn = true; save(); return jsonResponse({ jwt: 'DEMO_OFFLINE_SESSION' }); }
+    if (path === '/auth') { db.demoPersona=(body.Username||body.username)==='admin'?'admin':'user'; db.loggedIn = true; save(); return jsonResponse({ jwt: 'DEMO_OFFLINE_SESSION' }); }
     if (path === '/users/admin/check') return jsonResponse(null, 204);
-    if (path === '/users/me') return db.loggedIn ? jsonResponse(db.users[0]) : jsonResponse({ message: '演示账户已退出，请用 admin / demo 重新登录。' }, 401);
-    if (path === '/users/1/memberships') return jsonResponse(db.memberships);
+    if (path === '/users/me') return db.loggedIn ? jsonResponse(currentUser()) : jsonResponse({ message: '演示账户已退出，请用 viewer / demo 或 admin / demo 重新登录。' }, 401);
+    if (/^\/users\/\d+\/memberships$/.test(path)) return jsonResponse(db.memberships);
     if (path === '/team_memberships' || path.startsWith('/team_memberships/')) return crud('memberships', method, path.split('/')[2], body);
     if (/^\/users\/\d+\/tokens/.test(path)) return crud('accessTokens', method, path.split('/').slice(4).join('/'), body);
     if (/^\/users\/\d+\/gitcredentials/.test(path)) return jsonResponse([]);
     if (/^\/users\/\d+\/passwd/.test(path)) { audit('更新演示账户信息', 'admin'); return jsonResponse(null, 204); }
-    if (/^\/users\/\d+\/theme/.test(path)) { db.users[0].ThemeSettings = body; save(); return jsonResponse(db.users[0]); }
+    if (/^\/users\/\d+\/theme/.test(path)) { currentUser().ThemeSettings = body; save(); return jsonResponse(currentUser()); }
     let match = path.match(/^\/endpoints\/(\d+)\/docker(\/.*)?$/);
     if (match) return handleDocker(method, match[2] || '/', q, body, +match[1]) || unknown(method, path, body);
     if (path === '/endpoints/summary') return jsonResponse({ total: db.environments.length, up: db.boardOnline ? db.environments.length : 0, down: db.boardOnline ? 0 : db.environments.length, outdated: 0, unassigned: db.environments.filter((e) => e.GroupId === 1).length, byGroup: [{ groupName: 'Unassigned', groupID: 1, count: db.environments.length }], byPlatformType: { docker: db.environments.length, kubernetes: 0, podman: 0, azure: 0 }, byHealth: { down: db.boardOnline ? 0 : 1, up: 0, heartbeat: db.boardOnline ? 1 : 0, outdated: 0 } });
@@ -499,7 +527,7 @@
   function showHelp(url) {
     const old = document.getElementById('demo-info'); if (old) old.remove();
     const box = document.createElement('div'); box.id = 'demo-info'; box.className = 'demo-overlay';
-    box.innerHTML = '<section class="demo-dialog"><button class="demo-close" aria-label="关闭帮助">×</button><h2>EdgeStack.io 演示说明</h2><p>当前文件内置中文管理界面和本地模拟的 Server、RK3588。所有操作会更新本次会议数据。</p><div class="demo-callout">常用路径：<br>首页 → 选择 RK3588 → 容器 → 日志 / 监控<br>边缘分组 → home-workers → 环境成员<br>边缘应用栈 → 添加应用栈 → 编辑 Compose → 部署</div><p class="demo-muted">外部链接</p><code></code><p>会议使用说明见同目录的「交互文档.md」。服务端和板卡连接状态可在右下角「演示控制」中切换。</p></section>';
+    box.innerHTML = '<section class="demo-dialog"><button class="demo-close" aria-label="关闭帮助">×</button><h2>EdgeStack.io 演示说明</h2><p>当前文件内置中文管理界面和本地模拟的 Server、RK3588。所有操作会更新本次会议数据。</p><div class="demo-callout">用户空间：点击工作台查看任务、互动与模型；按需生成本地样例小结。<br>可在演示控制切换到原生管理员后台。<br>管理员路径：<br>首页 → 选择 RK3588 → 容器 → 日志 / 监控<br>边缘分组 → home-workers → 环境成员<br>边缘应用栈 → 添加应用栈 → 编辑 Compose → 部署</div><p class="demo-muted">外部链接</p><code></code><p>会议使用说明见同目录的「交互文档.md」。服务端和板卡连接状态可在右下角「演示控制」中切换。</p></section>';
     box.querySelector('code').textContent = String(url || '本地会议演示');
     box.querySelector('button').onclick = () => box.remove(); box.onclick = (e) => { if (e.target === box) box.remove(); };
     document.body.append(box);
@@ -507,7 +535,7 @@
   function download(name, content, type = 'application/json') { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
   function controls() {
     const box = document.createElement('div'); box.id = 'demo-tools';
-    box.innerHTML = '<button id="demo-toggle" aria-expanded="false">● 会议演示 <span>本地模拟</span></button><section id="demo-panel" hidden><header><strong>演示控制</strong><button id="demo-close-panel" aria-label="关闭演示控制">×</button></header><p class="demo-muted">Server · Windows / WSL<br>Worker · RK3588 / Debian 12 ARM64</p><label>RK3588 连接状态 <select id="demo-board"><option value="1">在线 · 心跳正常</option><option value="0">离线 · 业务容器继续运行</option></select></label><label>CPU 使用率 <input id="demo-cpu" type="range" min="1" max="95"><output id="demo-cpu-value"></output></label><div class="demo-actions"><button data-route="/home">首页</button><button data-route="/4/docker/host">主机</button><button data-route="/4/docker/containers">容器</button><button data-route="/edge/groups">分组</button><button data-route="/edge/stacks">边缘应用栈</button></div><button id="demo-help">交互帮助</button><button id="demo-export">导出会议数据</button><button id="demo-audit">查看操作记录</button><button id="demo-reset" class="demo-danger">恢复初始演示数据</button><p class="demo-muted">原生界面和交互保留。页面中的服务、设备、账户和凭据均为会议示例。</p></section>';
+    box.innerHTML = '<button id="demo-toggle" aria-expanded="false">● 会议演示 <span>本地模拟</span></button><section id="demo-panel" hidden><header><strong>演示控制</strong><button id="demo-close-panel" aria-label="关闭演示控制">×</button></header><p class="demo-muted">Server · Windows / WSL<br>Worker · RK3588 / Debian 12 ARM64</p><label>RK3588 连接状态 <select id="demo-board"><option value="1">在线 · 心跳正常</option><option value="0">离线 · 业务容器继续运行</option></select></label><label>CPU 使用率 <input id="demo-cpu" type="range" min="1" max="95"><output id="demo-cpu-value"></output></label><div class="demo-actions"><button data-persona="user">用户空间</button><button data-persona="admin">管理后台</button><button data-route="/home">首页</button><button data-route="/4/docker/host">主机</button><button data-route="/4/docker/containers">容器</button><button data-route="/edge/groups">分组</button><button data-route="/edge/stacks">边缘应用栈</button></div><button id="demo-voice-event">模拟新语音互动</button><button id="demo-camera-event">模拟新视觉互动</button><button id="demo-help">交互帮助</button><button id="demo-export">导出会议数据</button><button id="demo-audit">查看操作记录</button><button id="demo-reset" class="demo-danger">恢复初始演示数据</button><p class="demo-muted">原生界面和交互保留。页面中的服务、设备、账户和凭据均为会议示例。</p></section>';
     document.body.append(box);
     const panel = box.querySelector('#demo-panel'), toggle = box.querySelector('#demo-toggle');
     const close = () => { panel.hidden = true; toggle.setAttribute('aria-expanded', 'false'); };
@@ -518,15 +546,17 @@
     const cpu = box.querySelector('#demo-cpu'); cpu.value = db.cpu;
     const output = box.querySelector('#demo-cpu-value'); output.value = db.cpu + '%';
     cpu.oninput = () => { db.cpu = +cpu.value; output.value = db.cpu + '%'; save(); };
+    box.querySelectorAll('[data-persona]').forEach(b=>{b.onclick=()=>{db.demoPersona=b.dataset.persona;db.loggedIn=true;save();location.hash=db.demoPersona==='admin'?'#!/home':'#!/workspace?view=space';location.reload();};});
     box.querySelectorAll('[data-route]').forEach((b) => { b.onclick = () => { location.hash = '#!' + b.dataset.route; close(); }; });
+    box.querySelector('#demo-voice-event').onclick=()=>{business.emitDemoEvent('voice');close();};box.querySelector('#demo-camera-event').onclick=()=>{business.emitDemoEvent('camera');close();};
     box.querySelector('#demo-help').onclick = () => showHelp('本地交互文档');
     box.querySelector('#demo-export').onclick = () => download('EdgeStack-会议数据.json', JSON.stringify(db, null, 2));
     box.querySelector('#demo-audit').onclick = () => { showHelp('本次会议操作记录'); const block = document.querySelector('#demo-info code'); block.textContent = db.audit.map((x) => new Date(x.time).toLocaleTimeString('zh-CN') + '  ' + x.action + ' · ' + x.target).join('\n'); };
-    box.querySelector('#demo-reset').onclick = () => { if (confirm('恢复初始演示数据？本文件中的会议操作将被清除。')) { db = seed(); try { for (const key of Object.keys(localStorage)) if (key.startsWith('portainer.') || key.startsWith('edgestack.conference.')) localStorage.removeItem(key); } catch {} save(); location.hash = '#!/4/docker/host'; location.reload(); } };
+    box.querySelector('#demo-reset').onclick = () => { if (confirm('恢复初始演示数据？本文件中的会议操作将被清除。')) { db = seed(); db.demoPersona='user'; db.demoBusiness=window.EdgeStackDemoBusiness.seed(); try { for (const key of Object.keys(localStorage)) if (key.startsWith('portainer.') || key.startsWith('edgestack.conference.')) localStorage.removeItem(key); } catch {} save(); location.hash = '#!/workspace?view=space'; location.reload(); } };
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); document.getElementById('demo-info')?.remove(); } });
   }
-  window.EdgeStackDemo = { version: 1, requests, getState: () => clone(db), reset() { db = seed(); save(); location.reload(); }, route };
-  if (!location.hash || location.hash === '#') location.hash = '#!/4/docker/host';
+  window.EdgeStackDemo = { version: 2, fixture:true, emitDemoEvent:business.emitDemoEvent, requests, getState: () => clone(db), reset() { db = seed(); db.demoPersona='user'; db.demoBusiness=window.EdgeStackDemoBusiness.seed(); save(); location.reload(); }, route };
+  if (!location.hash || location.hash === '#') location.hash = '#!/workspace?view=space';
   document.documentElement.lang = 'zh-CN';
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', controls, { once: true }); else controls();
   setInterval(() => { if (db.boardOnline) db.environments.forEach((e) => { e.LastCheckInDate = now(); e.Heartbeat = true; }); }, 5000);

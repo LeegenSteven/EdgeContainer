@@ -1,0 +1,4 @@
+# Build the Go binary from this checkout before building this runtime layer.
+FROM portainer/portainer-ce:2.45.3@sha256:3609c307943bca8e5c492f69ddd6965df177208b50678a4cff28391c8dd4e96e
+COPY --chmod=755 portainer /portainer
+COPY --chmod=644 voice-test.html /voice-test.html

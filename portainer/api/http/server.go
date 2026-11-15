@@ -24,6 +24,7 @@ import (
 	dockerhandler "github.com/portainer/portainer/api/http/handler/docker"
 	"github.com/portainer/portainer/api/http/handler/edgegroups"
 	"github.com/portainer/portainer/api/http/handler/edgejobs"
+	"github.com/portainer/portainer/api/http/handler/edgestackbusiness"
 	"github.com/portainer/portainer/api/http/handler/edgestacks"
 	"github.com/portainer/portainer/api/http/handler/endpointedge"
 	"github.com/portainer/portainer/api/http/handler/endpointgroups"
@@ -125,6 +126,12 @@ func (server *Server) Start(ctx context.Context) error {
 	if !server.CSP {
 		requestBouncer.DisableCSP()
 	}
+
+	businessService, err := edgestackbusiness.New(ctx, requestBouncer, server.DataStore, server.FileService, server.EdgeStacksService, server.DockerClientFactory)
+	if err != nil {
+		return err
+	}
+	defer businessService.Close()
 
 	rateLimiter := security.NewRateLimiter(10, 1*time.Second, 1*time.Hour, nil)
 	offlineGate := offlinegate.NewOfflineGate()
@@ -303,40 +310,41 @@ func (server *Server) Start(ctx context.Context) error {
 	webhookHandler.DockerClientFactory = server.DockerClientFactory
 
 	server.Handler = &handler.Handler{
-		RoleHandler:            roleHandler,
-		AuthHandler:            authHandler,
-		BackupHandler:          backupHandler,
-		CustomTemplatesHandler: customTemplatesHandler,
-		DockerHandler:          dockerHandler,
-		EdgeGroupsHandler:      edgeGroupsHandler,
-		EdgeJobsHandler:        edgeJobsHandler,
-		EdgeStacksHandler:      edgeStacksHandler,
-		EndpointGroupHandler:   endpointGroupHandler,
-		EndpointHandler:        endpointHandler,
-		EndpointHelmHandler:    endpointHelmHandler,
-		EndpointEdgeHandler:    endpointEdgeHandler,
-		EndpointProxyHandler:   endpointProxyHandler,
-		GitOperationHandler:    gitOperationHandler,
-		FileHandler:            fileHandler,
-		LDAPHandler:            ldapHandler,
-		HelmTemplatesHandler:   helmTemplatesHandler,
-		KubernetesHandler:      kubernetesHandler,
-		MOTDHandler:            motdHandler,
-		RegistryHandler:        registryHandler,
-		ResourceControlHandler: resourceControlHandler,
-		SettingsHandler:        settingsHandler,
-		SSLHandler:             sslHandler,
-		StackHandler:           stackHandler,
-		StorybookHandler:       storybookHandler,
-		SystemHandler:          systemHandler,
-		TagHandler:             tagHandler,
-		TeamHandler:            teamHandler,
-		TeamMembershipHandler:  teamMembershipHandler,
-		TemplatesHandler:       templatesHandler,
-		UploadHandler:          uploadHandler,
-		UserHandler:            userHandler,
-		WebSocketHandler:       websocketHandler,
-		WebhookHandler:         webhookHandler,
+		RoleHandler:              roleHandler,
+		AuthHandler:              authHandler,
+		BackupHandler:            backupHandler,
+		CustomTemplatesHandler:   customTemplatesHandler,
+		DockerHandler:            dockerHandler,
+		EdgeGroupsHandler:        edgeGroupsHandler,
+		EdgeJobsHandler:          edgeJobsHandler,
+		EdgeStacksHandler:        edgeStacksHandler,
+		EdgeStackBusinessHandler: businessService.Handler(),
+		EndpointGroupHandler:     endpointGroupHandler,
+		EndpointHandler:          endpointHandler,
+		EndpointHelmHandler:      endpointHelmHandler,
+		EndpointEdgeHandler:      endpointEdgeHandler,
+		EndpointProxyHandler:     endpointProxyHandler,
+		GitOperationHandler:      gitOperationHandler,
+		FileHandler:              fileHandler,
+		LDAPHandler:              ldapHandler,
+		HelmTemplatesHandler:     helmTemplatesHandler,
+		KubernetesHandler:        kubernetesHandler,
+		MOTDHandler:              motdHandler,
+		RegistryHandler:          registryHandler,
+		ResourceControlHandler:   resourceControlHandler,
+		SettingsHandler:          settingsHandler,
+		SSLHandler:               sslHandler,
+		StackHandler:             stackHandler,
+		StorybookHandler:         storybookHandler,
+		SystemHandler:            systemHandler,
+		TagHandler:               tagHandler,
+		TeamHandler:              teamHandler,
+		TeamMembershipHandler:    teamMembershipHandler,
+		TemplatesHandler:         templatesHandler,
+		UploadHandler:            uploadHandler,
+		UserHandler:              userHandler,
+		WebSocketHandler:         websocketHandler,
+		WebhookHandler:           webhookHandler,
 	}
 
 	errorLogger := NewHTTPLogger()
@@ -345,7 +353,7 @@ func (server *Server) Start(ctx context.Context) error {
 
 	handler = middlewares.WithPanicLogger(middlewares.WithSlowRequestsLogger(handler))
 
-	handler, err := csrf.WithProtect(handler, server.TrustedOrigins)
+	handler, err = csrf.WithProtect(handler, server.TrustedOrigins)
 	if err != nil {
 		return errors.Wrap(err, "failed to create CSRF middleware")
 	}

@@ -11,7 +11,7 @@ const { chromium } = require('playwright');
 (async () => {
   const release = path.resolve(process.argv[2]);
   const manifest = JSON.parse(fs.readFileSync(path.join(release, 'manifest.json')));
-  const bundle = Object.keys(manifest.files).find((x) => x.endsWith('.js'));
+  const bundle = Object.keys(manifest.files).find((x) => /edgestack-ui\..+\.js$/.test(x));
   const temp = fs.mkdtempSync(path.join(os.tmpdir(), 'edgestack-ui-test-'));
   const fixture = path.join(temp, 'fixture.html');
   fs.writeFileSync(fixture, `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Portainer</title>

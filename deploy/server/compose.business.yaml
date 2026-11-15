@@ -1,0 +1,14 @@
+# Combine with compose.yaml and compose.ui.yaml. All secret files must be
+# private regular files (0600) on the Server, outside this repository.
+services:
+  portainer:
+    environment:
+      DEEPSEEK_API_KEY_FILE: /run/secrets/deepseek.key
+      DEEPSEEK_MODEL: ${DEEPSEEK_MODEL:-deepseek-flash}
+      EDGESTACK_BOOTSTRAP_FILE: /run/secrets/bootstrap.json
+      EDGESTACK_VOICE_TEST_FILE: /voice-test.html
+      NO_PROXY: ${NO_PROXY:-localhost,127.0.0.1}
+    volumes:
+      - ${EDGESTACK_PRIVATE_DIR:?Set absolute private Server directory}/deepseek.key:/run/secrets/deepseek.key:ro
+      - ${EDGESTACK_PRIVATE_DIR:?Set absolute private Server directory}/bootstrap.json:/run/secrets/bootstrap.json:ro
+      - ${EDGESTACK_PRIVATE_DIR:?Set absolute private Server directory}/voice-upstream.token:/run/secrets/voice_upstream_token:ro

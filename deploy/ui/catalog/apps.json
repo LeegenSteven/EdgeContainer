@@ -1,0 +1,15 @@
+{
+  "schemaVersion": 1,
+  "recipes": [
+    {
+      "id": "connectivity", "name": "连通性测试", "description": "部署一个小型网页，检查设备下发、访问端口和日志。", "revision": "2026-11-15.1",
+      "versions": [{"name":"1.10.3", "image":"traefik/whoami:v1.10.3@sha256:7865582efaa90720f146cbdb411756b5e85dafcb0f608396a48c4d2d0b1218ad", "architecture":"arm64"}],
+      "defaultPort": 18083, "storage": false, "hardware": "普通网络服务，无额外硬件要求。"
+    },
+    {
+      "id": "persistent-web", "name": "持久化测试网页", "description": "把网页文件放进独立数据卷，验证重新部署后文件仍保留。", "revision": "2026-11-15.1",
+      "versions": [{"name":"Python 3.11 / Debian Bookworm", "image":"public.ecr.aws/docker/library/python:3.11-slim-bookworm@sha256:a83ba18aef0f865b1a4a611c2cf460fe446f2795673bbb9fe43be570439e3b39", "architecture":"arm64"}],
+      "defaultPort": 18084, "storage": true, "hardware": "普通网络服务，无额外硬件要求。"
+    }
+  ]
+}

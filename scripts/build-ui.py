@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
 """Build a dependency-free Chinese/EdgeStack overlay for an original index.html.
 
-The original JavaScript bundles and backend are kept byte-for-byte unchanged.
+The original JavaScript bundles are kept byte-for-byte unchanged. An optional
+immutable Server image binds the overlay to the separately built business API.
 Input must come from the pinned Server image, never from an authenticated page.
 """
 import argparse
@@ -32,7 +33,7 @@ def load_copy():
     return dict(sorted(result.items()))
 
 
-def build(index, output):
+def build(index, output, server_image=None):
     source_index = index.read_text()
     if 'data-edgestack-ui' in source_index:
         raise ValueError('Use the saved upstream index.html, not an already modified page.')
@@ -41,8 +42,16 @@ def build(index, output):
     copy = load_copy()
     template = (UI / 'src/edgestack-ui.js').read_text()
     css = (UI / 'src/edgestack-ui.css').read_bytes()
+    workspace = ROOT / 'portainer/app/edgestack'
+    core = (workspace / 'flow-core.js').read_text()
+    workflow_template = (workspace / 'workspace.js').read_text()
+    workflow_css = (workspace / 'workspace.css').read_bytes()
+    catalog = json.loads((UI / 'catalog/apps.json').read_text())
+    if catalog.get('schemaVersion') != 1 or not catalog.get('recipes'):
+        raise ValueError('Invalid EdgeStack application catalog')
+    catalog_payload = json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
     payload = json.dumps(copy, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
-    seed = template.encode() + payload.encode() + css
+    seed = template.encode() + payload.encode() + css + core.encode() + workflow_template.encode() + workflow_css + catalog_payload.encode()
     for name in ['edgestack-logo.svg', 'edgestack-icon.svg']:
         seed += (UI / 'src' / name).read_bytes()
     version = digest(seed)[:12]
@@ -52,6 +61,12 @@ def build(index, output):
     js_name, css_name = f'edgestack-ui.{version}.js', f'edgestack-ui.{version}.css'
     (static / js_name).write_text(javascript)
     (static / css_name).write_bytes(css)
+    core_name = f'edgestack-flow-core.{version}.js'
+    workflow_name = f'edgestack-workspace.{version}.js'
+    workflow_css_name = f'edgestack-workspace.{version}.css'
+    (static / core_name).write_text(core)
+    (static / workflow_name).write_text(workflow_template.replace('__EDGESTACK_APP_CATALOG__', catalog_payload).replace('__EDGESTACK_VERSION__', version))
+    (static / workflow_css_name).write_bytes(workflow_css)
     for name in ['edgestack-logo.svg', 'edgestack-icon.svg']:
         (static / name).write_bytes((UI / 'src' / name).read_bytes())
 
@@ -62,9 +77,11 @@ def build(index, output):
     html = re.sub(r'<link\b[^>]*\brel="(?:icon|shortcut icon|mask-icon|apple-touch-icon)"[^>]*>', '', html)
     # Defer runs before the upstream entry bundle, without delaying HTML parsing.
     script_tag = f'<script defer src="edgestack/{js_name}" data-edgestack-ui="{version}"></script>'
+    script_tag += f'<script defer src="edgestack/{core_name}"></script><script defer src="edgestack/{workflow_name}"></script>'
     html = html.replace('<head>', '<head>' + script_tag, 1)
     extras = (
         f'<link rel="stylesheet" href="edgestack/{css_name}" data-edgestack-ui="{version}">'
+        f'<link rel="stylesheet" href="edgestack/{workflow_css_name}">'
         f'<link rel="icon" type="image/svg+xml" href="edgestack/edgestack-icon.svg?v={version}">'
         '<meta name="application-name" content="EdgeStack.io">'
     )
@@ -76,7 +93,9 @@ def build(index, output):
         'locale': 'zh-CN',
         'brand': 'EdgeStack.io',
         'phrase_count': len(copy),
-        'server_image': lock['images']['server']['reference'],
+        'workspace': {'route': '#!/workspace', 'catalog_schema': catalog['schemaVersion'], 'recipes': [r['id'] for r in catalog['recipes']]},
+        'server_image': server_image or lock['images']['server']['reference'],
+        'server_base_image': lock['images']['server']['reference'],
         'original_index_sha256': digest(source_index.encode()),
         'files': {str(p.relative_to(output)): digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name != 'manifest.json'},
     }
@@ -88,7 +107,10 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--index', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
+    parser.add_argument('--server-image', help='Immutable custom Server image (sha256 ID or reference pinned by digest).')
     args = parser.parse_args()
+    if args.server_image and not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})', args.server_image):
+        parser.error('--server-image must be an immutable sha256 image reference')
     if args.output.exists() and any(args.output.iterdir()):
         parser.error('Output directory must be empty; use a new release directory.')
-    build(args.index, args.output)
+    build(args.index, args.output, args.server_image)

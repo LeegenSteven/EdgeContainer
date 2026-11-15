@@ -22,3 +22,5 @@
 .demo-close{position:absolute;right:15px;top:12px;border:0;background:none;color:#d8e2f1;font-size:25px;cursor:pointer}
 .demo-callout{padding:13px 17px;background:#16314b;border-left:3px solid #5ca7ff;border-radius:4px;margin:16px 0}
 @media print{#demo-tools{display:none}}
+
+#demo-panel{max-height:calc(100vh - 85px);overflow:auto}

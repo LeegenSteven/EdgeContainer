@@ -41,41 +41,42 @@ import (
 
 // Handler is a collection of all the service handlers.
 type Handler struct {
-	AuthHandler            *auth.Handler
-	BackupHandler          *backup.Handler
-	CustomTemplatesHandler *customtemplates.Handler
-	DockerHandler          *docker.Handler
-	EdgeGroupsHandler      *edgegroups.Handler
-	EdgeJobsHandler        *edgejobs.Handler
-	EdgeStacksHandler      *edgestacks.Handler
-	EndpointEdgeHandler    *endpointedge.Handler
-	EndpointGroupHandler   *endpointgroups.Handler
-	EndpointHandler        *endpoints.Handler
-	EndpointHelmHandler    *helm.Handler
-	EndpointProxyHandler   *endpointproxy.Handler
-	GitOperationHandler    *gitops.Handler
-	HelmTemplatesHandler   *helm.Handler
-	KubernetesHandler      *kubernetes.Handler
-	FileHandler            *file.Handler
-	LDAPHandler            *ldap.Handler
-	MOTDHandler            *motd.Handler
-	RegistryHandler        *registries.Handler
-	ResourceControlHandler *resourcecontrols.Handler
-	RoleHandler            *roles.Handler
-	SettingsHandler        *settings.Handler
-	SSLHandler             *ssl.Handler
-	StackHandler           *stacks.Handler
-	StorybookHandler       *storybook.Handler
-	SystemHandler          *system.Handler
-	TagHandler             *tags.Handler
-	TeamMembershipHandler  *teammemberships.Handler
-	TeamHandler            *teams.Handler
-	TemplatesHandler       *templates.Handler
-	UploadHandler          *upload.Handler
-	UserHandler            *users.Handler
-	WebSocketHandler       *websocket.Handler
-	WebhookHandler         *webhooks.Handler
-	UserHelmHandler        *helm.Handler
+	AuthHandler              *auth.Handler
+	BackupHandler            *backup.Handler
+	CustomTemplatesHandler   *customtemplates.Handler
+	DockerHandler            *docker.Handler
+	EdgeGroupsHandler        *edgegroups.Handler
+	EdgeJobsHandler          *edgejobs.Handler
+	EdgeStacksHandler        *edgestacks.Handler
+	EdgeStackBusinessHandler http.Handler
+	EndpointEdgeHandler      *endpointedge.Handler
+	EndpointGroupHandler     *endpointgroups.Handler
+	EndpointHandler          *endpoints.Handler
+	EndpointHelmHandler      *helm.Handler
+	EndpointProxyHandler     *endpointproxy.Handler
+	GitOperationHandler      *gitops.Handler
+	HelmTemplatesHandler     *helm.Handler
+	KubernetesHandler        *kubernetes.Handler
+	FileHandler              *file.Handler
+	LDAPHandler              *ldap.Handler
+	MOTDHandler              *motd.Handler
+	RegistryHandler          *registries.Handler
+	ResourceControlHandler   *resourcecontrols.Handler
+	RoleHandler              *roles.Handler
+	SettingsHandler          *settings.Handler
+	SSLHandler               *ssl.Handler
+	StackHandler             *stacks.Handler
+	StorybookHandler         *storybook.Handler
+	SystemHandler            *system.Handler
+	TagHandler               *tags.Handler
+	TeamMembershipHandler    *teammemberships.Handler
+	TeamHandler              *teams.Handler
+	TemplatesHandler         *templates.Handler
+	UploadHandler            *upload.Handler
+	UserHandler              *users.Handler
+	WebSocketHandler         *websocket.Handler
+	WebhookHandler           *webhooks.Handler
+	UserHelmHandler          *helm.Handler
 }
 
 // @title PortainerCE API
@@ -204,6 +205,12 @@ type Handler struct {
 // ServeHTTP delegates a request to the appropriate subhandler.
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
+	case strings.HasPrefix(r.URL.Path, "/api/edgestack/") || r.URL.Path == "/api/edgestack":
+		if h.EdgeStackBusinessHandler == nil {
+			http.NotFound(w, r)
+			return
+		}
+		h.EdgeStackBusinessHandler.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/endpoints") && strings.Contains(r.URL.Path, "/edge/"):
 		h.EndpointEdgeHandler.ServeHTTP(w, r)
 	case strings.HasPrefix(r.URL.Path, "/api/auth"):

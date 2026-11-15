@@ -1,0 +1,233 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EdgeStack 语音集成测试</title>
+<style>
+  :root {color-scheme:light; font-family:system-ui,-apple-system,sans-serif; color:#172536; background:#eef3f7}
+  * {box-sizing:border-box} body {max-width:880px; margin:40px auto; padding:0 20px}
+  main {background:white; padding:28px; border-radius:16px; border:1px solid #dbe4ec}
+  h1 {font-size:26px; margin:0 0 12px} p {line-height:1.7; margin:12px 0} .muted {color:#5c6f80}
+  button {font:inherit; border:1px solid #bfd0df; border-radius:8px; padding:10px 16px; background:white; cursor:pointer; margin:5px 6px 5px 0}
+  #start {background:#1267b2; color:white; border-color:#1267b2} button:disabled {opacity:.45; cursor:default}
+  #status {font-weight:600; background:#edf6ff; padding:12px; border-radius:8px}
+  .result {border-top:1px solid #e4ebf0; padding-top:14px; margin-top:20px} .result strong {display:block; margin-bottom:6px}
+  output {white-space:pre-wrap; overflow-wrap:anywhere; display:block; line-height:1.6}
+  #receipts {font:12px/1.7 ui-monospace,monospace; color:#496176; max-height:200px; overflow:auto}
+</style>
+<main>
+  <h1>语音集成测试</h1>
+  <p>通过麦克风说一句话，设备识别后朗读“回声测试回复：识别内容”。这是 ASR、TTS 和业务事件链路测试，回复由测试程序生成。</p>
+  <p class="muted">点击后才申请麦克风权限；结束或取消会关闭麦克风。音频仅送到该任务的语音服务处理。业务记录保存最终文字与播放状态。</p>
+  <p id="task" class="muted"></p>
+  <p id="status" role="status" aria-live="polite">正在检查语音服务…</p>
+  <div>
+    <button id="start" disabled>开始录音</button>
+    <button id="check">检查服务</button>
+    <button id="finish" disabled>结束录音并识别</button>
+    <button id="cancel" disabled>取消并停止</button>
+  </div>
+  <div class="result"><strong>最终识别</strong><output id="transcript">等待语音输入</output></div>
+  <div class="result"><strong>回声测试回复</strong><output id="reply">等待识别完成</output></div>
+  <div class="result"><strong>事件回执</strong><output id="receipts">等待设备写入业务事件</output></div>
+  <p class="muted">“播放结束”以浏览器音频队列的 onended 为准。设备写入回执确认 JSONL 已落盘，Server 入库状态可在任务业务记录中核对。</p>
+</main>
+<script>
+(() => {
+  const $ = id => document.getElementById(id);
+  const match = location.pathname.match(/\/tasks\/([^/]+)\/voice-test\/?$/);
+  const taskId = new URLSearchParams(location.search).get('taskId') || (match && decodeURIComponent(match[1]));
+  $('task').textContent = taskId ? '任务：' + taskId : '缺少任务标识，请从任务页面打开。';
+  let socket, context, stream, source, processor, mute;
+  let capture = false, cancelled = false, replied = false, ttsDone = false, playedSent = false;
+  let sampleRate = null, nextPlay = 0, audioBytes = 0, nodes = new Set(), residual = new Float32Array(), position = 0;
+  let turnId, timeout, playbackStartTimer;
+  let serviceReady = false, busy = false, healthChecking = false;
+  const status = text => { $('status').textContent = text; };
+  async function checkHealth(announce = false) {
+    if (!taskId || healthChecking) return false;
+    healthChecking = true;
+    $('start').disabled = true; $('check').disabled = true;
+    const previous = serviceReady, controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 8000);
+    if (announce) status('正在检查语音服务…');
+    try {
+      const response = await fetch('/api/edgestack/tasks/' + encodeURIComponent(taskId) + '/voice/health', {
+        credentials:'same-origin',cache:'no-store',signal:controller.signal
+      });
+      if (!response.ok) {
+        if (response.status === 401 || response.status === 403) throw new Error('无法访问该任务的语音服务，请检查登录与任务权限。');
+        throw new Error('语音服务尚未连接，请启动任务后重试。');
+      }
+      const data = await response.json();
+      serviceReady = data.asr === true && data.tts === true;
+      if (announce || previous !== serviceReady) status(serviceReady ? '服务已就绪：ASR、TTS 可用。点击后开始录音。' :
+        '语音服务未就绪：ASR ' + (data.asr === true ? '已就绪' : '未就绪') + '，TTS ' + (data.tts === true ? '已就绪' : '未就绪') + '。');
+    } catch (error) {
+      serviceReady = false;
+      if (announce || previous) status(error.name === 'AbortError' ? '语音服务检查超时，请稍后重试。' :
+        error.message.startsWith('无法访问') || error.message.startsWith('语音服务尚未连接') ? error.message : '暂时无法连接语音服务，请检查任务运行状态。');
+    } finally {
+      clearTimeout(timer); healthChecking = false;
+      $('start').disabled = busy || !serviceReady; $('check').disabled = busy;
+    }
+    return serviceReady;
+  }
+  function receipt(text) { $('receipts').textContent += '\n' + text; }
+  function send(payload) { if (socket && socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(payload)); }
+  function stopCapture(finalize) {
+    capture = false;
+    if (processor) { processor.onaudioprocess = null; processor.disconnect(); processor = null; }
+    if (source) { source.disconnect(); source = null; }
+    if (mute) { mute.disconnect(); mute = null; }
+    if (stream) { stream.getTracks().forEach(track => track.stop()); stream = null; }
+    $('finish').disabled = true;
+    if (finalize) { send({type:'asr_eos'}); status('录音已关闭，等待设备最终识别…'); responseDeadline(); }
+  }
+  function responseDeadline() {
+    clearTimeout(timeout);
+    clearTimeout(playbackStartTimer);
+    timeout = setTimeout(() => { cancelled = true; status('设备响应超时，请检查任务运行状态。'); cleanup(); }, 120000);
+  }
+  function cleanup(closeSocket = true) {
+    stopCapture(false);
+    clearTimeout(timeout);
+    clearTimeout(playbackStartTimer);
+    nodes.forEach(node => { node.onended = null; try { node.stop(); } catch (_) {} });
+    nodes.clear();
+    if (closeSocket && socket) { socket.close(); socket = null; }
+    if (context) { context.close().catch(() => {}); context = null; }
+    busy = false;
+    $('start').disabled = !taskId || !serviceReady;
+    $('check').disabled = !taskId;
+    $('cancel').disabled = true;
+  }
+  function maybePlayed() {
+    if (!cancelled && ttsDone && audioBytes > 0 && nodes.size === 0 && !playedSent) {
+      playedSent = true;
+      send({type:'edgestack_playback_ack',phase:'played'});
+      status('浏览器播放结束，等待设备写入回执…');
+      clearTimeout(timeout);
+      timeout = setTimeout(() => { status('播放结束；未收到设备写入回执，请检查任务记录。'); cleanup(); }, 10000);
+    }
+  }
+  function playPCM(buffer) {
+    if (cancelled) return;
+    if (sampleRate === null && buffer.byteLength === 4) {
+      sampleRate = new DataView(buffer).getUint32(0, true);
+      if (sampleRate < 8000 || sampleRate > 192000) throw new Error('设备返回了无效采样率');
+      return;
+    }
+    if (!sampleRate || buffer.byteLength % 2) throw new Error('设备返回了无效 PCM 格式');
+    const view = new DataView(buffer), pcm = new Float32Array(buffer.byteLength / 2);
+    for (let n = 0; n < pcm.length; n++) pcm[n] = view.getInt16(n * 2, true) / 32768;
+    const audio = context.createBuffer(1, pcm.length, sampleRate);
+    audio.copyToChannel(pcm, 0);
+    const node = context.createBufferSource(); node.buffer = audio; node.connect(context.destination);
+    const first = audioBytes === 0;
+    audioBytes += buffer.byteLength;
+    nodes.add(node);
+    node.onended = () => { nodes.delete(node); node.disconnect(); maybePlayed(); };
+    nextPlay = Math.max(nextPlay, context.currentTime + 0.06);
+    const startsAt = nextPlay;
+    node.start(startsAt); nextPlay += audio.duration;
+    if (first) {
+      playbackStartTimer = setTimeout(() => {
+        if (!cancelled && context && context.state === 'running') {
+          send({type:'edgestack_playback_ack',phase:'playing'}); status('正在播放设备合成的回声回复…');
+        }
+      }, Math.max(0, (startsAt - context.currentTime) * 1000));
+    }
+  }
+  function sendMicrophone(input) {
+    if (!capture || socket.readyState !== WebSocket.OPEN) return;
+    const combined = new Float32Array(residual.length + input.length);
+    combined.set(residual); combined.set(input, residual.length);
+    const step = context.sampleRate / 16000, samples = [];
+    while (position + 1 < combined.length) {
+      const i = Math.floor(position), fraction = position - i;
+      samples.push(combined[i] * (1 - fraction) + combined[i + 1] * fraction);
+      position += step;
+    }
+    const consumed = Math.min(Math.floor(position), combined.length);
+    residual = combined.slice(consumed); position -= consumed;
+    const bytes = new ArrayBuffer(samples.length * 2), view = new DataView(bytes);
+    samples.forEach((value, n) => { const v = Math.max(-1, Math.min(1, value)); view.setInt16(n * 2, v < 0 ? v * 32768 : v * 32767, true); });
+    if (socket.bufferedAmount > 2 * 1024 * 1024) throw new Error('语音连接发送积压，请重试');
+    socket.send(bytes);
+  }
+  async function start() {
+    if (!taskId || busy) return;
+    busy = true;
+    cancelled = false; replied = false; ttsDone = false; playedSent = false;
+    sampleRate = null; nextPlay = 0; audioBytes = 0; residual = new Float32Array(); position = 0;
+    turnId = crypto.randomUUID();
+    $('start').disabled = true; $('check').disabled = true; $('cancel').disabled = false;
+    $('transcript').textContent = '等待语音输入'; $('reply').textContent = '等待识别完成';
+    $('receipts').textContent = '会话 ' + turnId;
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('麦克风需要 HTTPS 或 localhost 安全上下文');
+      context = new (window.AudioContext || window.webkitAudioContext)();
+      await context.resume();
+      if (!await checkHealth(true) || cancelled) { cleanup(); return; }
+      status('服务已就绪，正在等待麦克风权限…');
+      stream = await navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true},video:false});
+      if (cancelled) { cleanup(); return; }
+      const url = new URL('/api/edgestack/tasks/' + encodeURIComponent(taskId) + '/voice/v2v/stream', location.origin);
+      url.protocol = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      socket = new WebSocket(url); socket.binaryType = 'arraybuffer';
+      await new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('语音服务连接超时')), 15000);
+        socket.onopen = () => { clearTimeout(timer); resolve(); };
+        socket.onerror = () => { clearTimeout(timer); reject(new Error('语音服务连接失败，请确认登录与任务状态')); };
+      });
+      if (cancelled) { cleanup(); return; }
+      socket.onmessage = message => {
+        try {
+          if (message.data instanceof ArrayBuffer) { playPCM(message.data); return; }
+          const data = JSON.parse(message.data);
+          if (data.type === 'error') throw new Error('设备语音处理失败，请检查运行状态');
+          if (data.type === 'asr_final' && data.text && !data.duplicate_of_streamed && !replied) {
+            replied = true; stopCapture(false);
+            responseDeadline();
+            $('transcript').textContent = data.text;
+            const reply = '回声测试回复：' + data.text;
+            $('reply').textContent = reply;
+            send({type:'edgestack_assistant_final',text:reply});
+            send({type:'text',text:reply}); send({type:'tts_flush'});
+            status('最终识别已收到，等待设备合成回复…');
+          } else if (data.type === 'tts_done') { ttsDone = true; maybePlayed(); }
+          else if (data.type === 'edgestack_business_ack') {
+            if (!data.eventId) throw new Error('设备未能写入业务事件，请检查专用 outbox');
+            receipt(data.phase + ' · ' + data.eventId);
+            if (data.phase === 'played') { status('测试完成：最终识别、回声回复与播放结束回执已写入设备。'); cleanup(); }
+          }
+        } catch (error) { cancelled = true; status(error.message); cleanup(); }
+      };
+      socket.onclose = () => { if (!playedSent && !cancelled) { cancelled = true; serviceReady = false; status('语音连接已关闭，请检查任务状态后重试。'); cleanup(false); } };
+      socket.onerror = () => { cancelled = true; serviceReady = false; status('语音连接出错，请重试。'); cleanup(); };
+      send({type:'config',asr_language:'zh',tts_language:'zh',sample_rate:16000,multi_utterance:true,
+            business_session_id:turnId,business_test_mode:'microphone_echo'});
+      source = context.createMediaStreamSource(stream);
+      processor = context.createScriptProcessor(4096, 1, 1);
+      mute = context.createGain(); mute.gain.value = 0;
+      processor.onaudioprocess = event => { try { sendMicrophone(event.inputBuffer.getChannelData(0)); } catch (error) { cancelled = true; status(error.message); cleanup(); } };
+      source.connect(processor); processor.connect(mute); mute.connect(context.destination);
+      capture = true; $('finish').disabled = false;
+      status('正在录音，请说一句话后点击“结束录音并识别”。');
+      timeout = setTimeout(() => { if (capture) stopCapture(true); }, 30000);
+    } catch (error) { cancelled = true; status(error.name === 'NotAllowedError' ? '未获得麦克风权限。请允许访问后重试。' : error.message); cleanup(); }
+  }
+  $('start').onclick = start;
+  $('check').onclick = () => checkHealth(true);
+  $('finish').onclick = () => stopCapture(true);
+  $('cancel').onclick = () => { cancelled = true; stopCapture(false); send({type:'abort'}); if (audioBytes) send({type:'edgestack_playback_ack',phase:'interrupted'}); cleanup(); status('已取消，麦克风与播放已关闭。'); };
+  window.addEventListener('pagehide', () => { cancelled = true; cleanup(); });
+  $('start').disabled = true;
+  $('check').disabled = !taskId;
+  if (taskId) checkHealth(true);
+  else status('缺少任务标识，无法检查语音服务。');
+  setInterval(() => { if (!busy && taskId) checkHealth(false); }, 15000);
+})();
+</script>
+</html>
