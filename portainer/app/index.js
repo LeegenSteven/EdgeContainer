@@ -70,7 +70,9 @@ angular
   .config(configApp);
 
 if (require) {
-  const req = require.context('./', true, /^(?!.*\.test\.js$).*\.js$/im);
+  // These independently versioned resources are injected by build-ui.py.
+  // Bundling them here would execute the workspace router hooks twice.
+  const req = require.context('./', true, /^(?!\.\/edgestack\/)(?!.*\.test\.js$).*\.js$/im);
   req.keys().forEach(function (key) {
     req(key);
   });

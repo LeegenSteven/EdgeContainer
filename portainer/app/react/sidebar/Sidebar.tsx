@@ -4,6 +4,7 @@ import { Home } from 'lucide-react';
 import { useIsEdgeAdmin, useIsPureAdmin } from '@/react/hooks/useUser';
 import { useIsCurrentUserTeamLeader } from '@/portainer/users/queries';
 import { usePublicSettings } from '@/react/portainer/settings/queries';
+import { BusinessSidebar } from '@/react/portainer/edgestack-admin/BusinessSidebar';
 
 import styles from './Sidebar.module.css';
 import { EdgeComputeSidebar } from './EdgeComputeSidebar';
@@ -74,6 +75,8 @@ function InnerSidebar() {
             <AppDeliverySidebar />
 
             {isAdmin && <EdgeComputeSidebar />}
+
+            {isPureAdmin && <BusinessSidebar />}
 
             <SettingsSidebar
               isPureAdmin={isPureAdmin}

@@ -47,7 +47,23 @@ func bootstrap(ctx context.Context, s *edgestack.Service, store dataservices.Dat
 	if err := decoder.Decode(new(any)); err != io.EOF {
 		return errors.New("invalid trailing operator configuration")
 	}
+	registered := map[string]bool{}
+	registeredDeployments := map[string]bool{}
+	for i := range config.Tasks {
+		target, exists, e := s.BootstrapTaskTarget(config.Tasks[i].ID)
+		if e != nil {
+			return e
+		}
+		if exists {
+			registered[config.Tasks[i].ID] = true
+			registeredDeployments[config.Tasks[i].Target.StackName] = true
+			config.Tasks[i].Target = target
+		}
+	}
 	for _, deployment := range config.Deployments {
+		if registeredDeployments[deployment.Name] {
+			continue
+		}
 		if !strings.HasPrefix(deployment.Name, "edgestack-") || deployment.EndpointID <= 0 || deployment.EdgeGroupName == "" || deployment.Compose == "" {
 			return errors.New("invalid isolated bootstrap deployment")
 		}
@@ -116,6 +132,9 @@ func bootstrap(ctx context.Context, s *edgestack.Service, store dataservices.Dat
 		}
 		for i := range config.Tasks {
 			task := &config.Tasks[i]
+			if registered[task.ID] {
+				continue
+			}
 			if task.Target.StackName != "" {
 				found := false
 				for _, stack := range stacks {

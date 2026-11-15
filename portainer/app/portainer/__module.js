@@ -12,6 +12,7 @@ import environmentsModule from './environments';
 import { helpersModule } from './helpers';
 import { AccessHeaders, requiresAuthHook } from './authorization-guard';
 import { filterParam, paginationParams } from './helpers/stateParamHelper';
+import { businessRoutesModule } from './business-management';
 
 async function initAuthentication(Authentication) {
   return await Authentication.init();
@@ -22,6 +23,7 @@ angular
     'portainer.oauth',
     'portainer.rbac',
     'portainer.registrymanagement',
+    businessRoutesModule,
     componentsModule,
     settingsModule,
     featureFlagModule,

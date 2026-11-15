@@ -33,8 +33,8 @@ var filesToBackup = []string{
 }
 
 // Creates a tar.gz system archive and encrypts it if password is not empty. Returns a path to the archive file.
-func CreateBackupArchive(password string, gate *offlinegate.OfflineGate, datastore dataservices.DataStore, filestorePath string) (string, error) {
-	backupDirPath, err := backupDatabaseAndFilesystem(gate, datastore, filestorePath)
+func CreateBackupArchive(password string, gate *offlinegate.OfflineGate, datastore dataservices.DataStore, filestorePath string, business ...BusinessStore) (string, error) {
+	backupDirPath, err := backupDatabaseAndFilesystem(gate, datastore, filestorePath, business...)
 	if err != nil {
 		return "", err
 	}
@@ -54,7 +54,7 @@ func CreateBackupArchive(password string, gate *offlinegate.OfflineGate, datasto
 	return archivePath, nil
 }
 
-func backupDatabaseAndFilesystem(gate *offlinegate.OfflineGate, datastore dataservices.DataStore, filestorePath string) (string, error) {
+func backupDatabaseAndFilesystem(gate *offlinegate.OfflineGate, datastore dataservices.DataStore, filestorePath string, business ...BusinessStore) (string, error) {
 	unlock := gate.Lock()
 	defer unlock()
 
@@ -74,6 +74,9 @@ func backupDatabaseAndFilesystem(gate *offlinegate.OfflineGate, datastore datase
 
 	if err := backupDb(backupDirPath, datastore); err != nil {
 		return "", errors.Wrap(err, "Failed to backup database")
+	}
+	if err := backupBusiness(backupDirPath, firstBusiness(business)); err != nil {
+		return "", errors.Wrap(err, "Failed to backup business database")
 	}
 
 	for _, filename := range filesToBackup {

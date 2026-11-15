@@ -5,9 +5,11 @@ import (
 	"errors"
 	"path"
 	"strconv"
+	"strings"
 	"sync"
 	"time"
 
+	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types/container"
 	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
@@ -34,10 +36,50 @@ type observedMount struct {
 	volume      bool
 }
 type mountSnapshot struct {
-	mounts     []observedMount
-	observedAt time.Time
-	reason     string
+	mounts           []observedMount
+	image            string
+	modelEnvironment map[string]string
+	observedAt       time.Time
+	reason           string
 }
+
+// Validation additionally proves the requested immutable image and approved
+// model parameters belong to the unique running registered task. These private
+// inspect fields are never included in a browser response.
+func modelRuntimeVerifier(provider edgestack.MountProvider) func(context.Context, edgestack.Task, edgestack.ModelPackage) error {
+	return func(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage) error {
+		p, ok := provider.(*mountProvider)
+		if !ok {
+			return errors.New("runtime_image_unconfirmed")
+		}
+		ctx, cancel := context.WithTimeout(ctx, mountQueryTimeout)
+		defer cancel()
+		snapshot := p.snapshot(ctx, task)
+		if snapshot.reason != "" || snapshot.observedAt.IsZero() {
+			return errors.New("runtime_image_unconfirmed")
+		}
+		expected, err := reference.ParseNormalizedNamed(model.Image)
+		if err != nil {
+			return errors.New("runtime_image_unconfirmed")
+		}
+		actual, err := reference.ParseNormalizedNamed(snapshot.image)
+		if err != nil {
+			return errors.New("runtime_image_unconfirmed")
+		}
+		wanted, wantedOK := expected.(reference.Canonical)
+		running, runningOK := actual.(reference.Canonical)
+		if !wantedOK || !runningOK || wanted.Name() != running.Name() || wanted.Digest() != running.Digest() {
+			return errors.New("runtime_image_unconfirmed")
+		}
+		for key, value := range model.Environment {
+			if got, ok := snapshot.modelEnvironment[key]; !ok || got != value {
+				return errors.New("runtime_model_parameters_unconfirmed")
+			}
+		}
+		return nil
+	}
+}
+
 type mountCacheKey struct {
 	target   edgestack.Target
 	revision int
@@ -225,7 +267,19 @@ func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountS
 	if ctx.Err() != nil {
 		return mountSnapshot{reason: "mount_query_timeout"}
 	}
-	result := mountSnapshot{observedAt: p.now().UTC(), mounts: make([]observedMount, 0, len(actual.Mounts))}
+	result := mountSnapshot{observedAt: p.now().UTC(), image: actual.Config.Image, modelEnvironment: make(map[string]string), mounts: make([]observedMount, 0, len(actual.Mounts))}
+	for _, item := range actual.Config.Env {
+		key, value, found := strings.Cut(item, "=")
+		if !found {
+			continue
+		}
+		for _, allowed := range task.ModelEnvKeys {
+			if key == allowed {
+				result.modelEnvironment[key] = value
+				break
+			}
+		}
+	}
 	for _, point := range actual.Mounts {
 		result.mounts = append(result.mounts, observedMount{destination: path.Clean(point.Destination), readOnly: !point.RW, volumeName: point.Name, volume: point.Type == mount.TypeVolume})
 	}

@@ -1,6 +1,7 @@
 package offlinegate
 
 import (
+	"errors"
 	"net/http"
 	"strings"
 	"time"
@@ -30,6 +31,16 @@ func NewOfflineGate() *OfflineGate {
 func (o *OfflineGate) Lock() func() {
 	o.lock.Lock()
 	return o.lock.Unlock
+}
+
+// ReadLease coordinates non-HTTP database writers with backup and restore.
+// HTTP mutations already hold a lease through WaitingMiddleware; they must not
+// acquire a second lease while a writer is waiting.
+func (o *OfflineGate) ReadLease(timeout time.Duration) (func(), error) {
+	if !o.lock.RTryLockWithTimeout(timeout) {
+		return nil, errors.New("timed out waiting for backup or restore")
+	}
+	return o.lock.RUnlock, nil
 }
 
 // WaitingMiddleware returns an http handler that waits for the gate to be unlocked before continuing

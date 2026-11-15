@@ -23,7 +23,7 @@ import (
 var filesToRestore = append(filesToBackup, "portainer.db")
 
 // Restores system state from backup archive, will trigger system shutdown, when finished.
-func RestoreArchive(archive io.Reader, password string, filestorePath string, gate *offlinegate.OfflineGate, datastore dataservices.DataStore, shutdownTrigger context.CancelFunc) error {
+func RestoreArchive(archive io.Reader, password string, filestorePath string, gate *offlinegate.OfflineGate, datastore dataservices.DataStore, shutdownTrigger context.CancelFunc, business ...BusinessStore) error {
 	var err error
 	if password != "" {
 		archive, err = decrypt(archive, password)
@@ -42,25 +42,51 @@ func RestoreArchive(archive io.Reader, password string, filestorePath string, ga
 	if err := extractArchive(archive, restorePath); err != nil {
 		return errors.Wrap(err, "cannot extract files from the archive. Please ensure the password is correct and try again")
 	}
+	restorePath, err = getRestoreSourcePath(restorePath)
+	if err != nil {
+		return errors.Wrap(err, "failed to find database in backup")
+	}
+	foundDatabase := false
+	for _, name := range []string{boltdb.DatabaseFileName, boltdb.EncryptedDatabaseFileName} {
+		if info, statErr := os.Stat(filepath.Join(restorePath, name)); statErr == nil && info.Mode().IsRegular() {
+			foundDatabase = true
+		}
+	}
+	if !foundDatabase {
+		return errors.New("Portainer database missing from backup")
+	}
+	if err := validateBusinessRestore(restorePath); err != nil {
+		return errors.Wrap(err, "invalid business database backup")
+	}
 
 	unlock := gate.Lock()
 	defer unlock()
+	// Establish crash recovery policy before closing or replacing either store.
+	if err := prepareBusinessRestore(filestorePath); err != nil {
+		return errors.Wrap(err, "failed to prepare business recovery marker")
+	}
+	// Once either store is closed, every exit path must stop the process. It
+	// cannot safely resume serving requests against a closed or partial restore.
+	if shutdownTrigger != nil {
+		defer shutdownTrigger()
+	}
+	if store := firstBusiness(business); store != nil {
+		if err := store.Close(); err != nil {
+			return errors.Wrap(err, "Failed to stop business database")
+		}
+	}
 
 	if err := datastore.Close(); err != nil {
 		return errors.Wrap(err, "Failed to stop db")
 	}
 
-	// At some point, backups were created containing a subdirectory, now we need to handle both
-	restorePath, err = getRestoreSourcePath(restorePath)
-	if err != nil {
-		return errors.Wrap(err, "failed to restore from backup. Portainer database missing from backup file")
-	}
-
 	if err := restoreFiles(restorePath, filestorePath); err != nil {
 		return errors.Wrap(err, "failed to restore the system state")
 	}
+	if err := restoreBusiness(restorePath, filestorePath); err != nil {
+		return errors.Wrap(err, "failed to restore business database")
+	}
 
-	shutdownTrigger()
 	return nil
 }
 

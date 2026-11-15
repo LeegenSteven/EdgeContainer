@@ -1,11 +1,13 @@
 package backup
 
 import (
+	"errors"
 	"net/http"
 	"os"
 	"path/filepath"
 
 	operations "github.com/portainer/portainer/api/backup"
+	"github.com/portainer/portainer/api/edgestack"
 	httperror "github.com/portainer/portainer/pkg/libhttp/error"
 	"github.com/portainer/portainer/pkg/libhttp/request"
 	"github.com/rs/zerolog/log"
@@ -41,8 +43,11 @@ func (h *Handler) backup(w http.ResponseWriter, r *http.Request) *httperror.Hand
 		return httperror.BadRequest("Invalid request payload", err)
 	}
 
-	archivePath, err := operations.CreateBackupArchive(payload.Password, h.gate, h.dataStore, h.filestorePath)
+	archivePath, err := operations.CreateBackupArchive(payload.Password, h.gate, h.dataStore, h.filestorePath, h.BusinessStore)
 	if err != nil {
+		if errors.Is(err, edgestack.ErrBackupBusy) {
+			return httperror.Conflict("A business deployment is being dispatched; retry after dispatch completes", err)
+		}
 		return httperror.InternalServerError("Failed to create backup", err)
 	}
 	defer func() {

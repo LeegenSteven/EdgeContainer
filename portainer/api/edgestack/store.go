@@ -18,6 +18,10 @@ var buckets = []string{"devices", "tasks", "sources", "events", "credentials", "
 var errNotFound = errors.New("not found")
 
 type Service struct {
+	cloud        *cloudManager
+	closed       chan struct{}
+	closeOnce    sync.Once
+	closeErr     error
 	db           *bolt.DB
 	opts         Options
 	modelMu      sync.Mutex
@@ -36,9 +40,9 @@ func Open(path string, opts Options) (*Service, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
-	s := &Service{db: db, opts: opts, summarySlots: make(chan struct{}, 2)}
+	s := &Service{db: db, opts: opts, summarySlots: make(chan struct{}, 2), closed: make(chan struct{})}
 	err = db.Update(func(tx *bolt.Tx) error {
-		for _, name := range append(buckets, "models") {
+		for _, name := range append(buckets, "models", "admin-meta", "model-policies", "model-validations", "audit", "imports") {
 			if _, err := tx.CreateBucketIfNotExists([]byte(name)); err != nil {
 				return err
 			}
@@ -49,14 +53,27 @@ func Open(path string, opts Options) (*Service, error) {
 		db.Close()
 		return nil, err
 	}
-	if err = s.Prune(); err != nil {
+	if err = s.migrateAdminSchema(); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if err = s.initCloudSettings(filepath.Dir(path)); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if _, markerErr := os.Stat(filepath.Join(filepath.Dir(path), RestoreMarker)); os.IsNotExist(markerErr) {
+		if err = s.Prune(); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	return s, nil
 }
 
-func (s *Service) Close() error { return s.db.Close() }
+func (s *Service) Close() error {
+	s.closeOnce.Do(func() { close(s.closed); s.closeErr = s.db.Close() })
+	return s.closeErr
+}
 
 func (s *Service) RunRetention(ctx context.Context) {
 	ticker := time.NewTicker(time.Hour)
@@ -64,6 +81,8 @@ func (s *Service) RunRetention(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
+			return
+		case <-s.closed:
 			return
 		case <-ticker.C:
 			_ = s.Prune()
@@ -102,12 +121,19 @@ func list[T any](tx *bolt.Tx, bucket string) ([]T, error) {
 }
 
 func (s *Service) Prune() error {
+	if s.opts.BackgroundWriteLease != nil {
+		unlock, err := s.opts.BackgroundWriteLease()
+		if err != nil {
+			return err
+		}
+		defer unlock()
+	}
 	if err := s.expireOperations(); err != nil {
 		return err
 	}
 	cutoff := s.opts.Now().Add(-Retention)
 	return s.db.Update(func(tx *bolt.Tx) error {
-		for _, name := range []string{"events", "summaries", "previews", "operations"} {
+		for _, name := range []string{"events", "summaries", "previews", "operations", "audit", "imports"} {
 			b := tx.Bucket([]byte(name))
 			c := b.Cursor()
 			for k, v := c.First(); k != nil; k, v = c.Next() {
@@ -136,7 +162,19 @@ func (s *Service) Prune() error {
 					if err := json.Unmarshal(v, &o); err != nil {
 						return err
 					}
-					remove = o.UpdatedAt.Before(cutoff)
+					remove = o.UpdatedAt.Before(s.opts.Now().Add(-90 * 24 * time.Hour))
+				case "audit":
+					var a AuditEntry
+					if err := json.Unmarshal(v, &a); err != nil {
+						return err
+					}
+					remove = a.OccurredAt.Before(s.opts.Now().Add(-90 * 24 * time.Hour))
+				case "imports":
+					var a importRecord
+					if err := json.Unmarshal(v, &a); err != nil {
+						return err
+					}
+					remove = a.ExpiresAt.Before(s.opts.Now().Add(-time.Hour))
 				}
 				if remove {
 					if err := c.Delete(); err != nil {
@@ -147,6 +185,17 @@ func (s *Service) Prune() error {
 		}
 		return nil
 	})
+}
+
+func (s *Service) expireOperationsBackground() error {
+	if s.opts.BackgroundWriteLease != nil {
+		unlock, err := s.opts.BackgroundWriteLease()
+		if err != nil {
+			return nil
+		}
+		defer unlock()
+	}
+	return s.expireOperations()
 }
 
 func (s *Service) expireOperations() error {
@@ -167,6 +216,9 @@ func (s *Service) expireOperations() error {
 				op.Status = "failed"
 				op.UpdatedAt = s.opts.Now().UTC()
 				if err := put(tx, "operations", op.ID, op); err != nil {
+					return err
+				}
+				if err := s.finishValidation(tx, op, Source{}, observation{}); err != nil {
 					return err
 				}
 				task, err := read[Task](tx, "tasks", op.TaskID)

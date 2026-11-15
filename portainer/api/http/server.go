@@ -127,14 +127,14 @@ func (server *Server) Start(ctx context.Context) error {
 		requestBouncer.DisableCSP()
 	}
 
-	businessService, err := edgestackbusiness.New(ctx, requestBouncer, server.DataStore, server.FileService, server.EdgeStacksService, server.DockerClientFactory)
+	offlineGate := offlinegate.NewOfflineGate()
+	businessService, err := edgestackbusiness.New(ctx, requestBouncer, server.DataStore, server.FileService, server.EdgeStacksService, server.DockerClientFactory, offlineGate)
 	if err != nil {
 		return err
 	}
 	defer businessService.Close()
 
 	rateLimiter := security.NewRateLimiter(10, 1*time.Second, 1*time.Hour, nil)
-	offlineGate := offlinegate.NewOfflineGate()
 
 	passwordStrengthChecker := security.NewPasswordStrengthChecker(server.DataStore.Settings())
 
@@ -159,6 +159,7 @@ func (server *Server) Start(ctx context.Context) error {
 		adminMonitor,
 	)
 	backupHandler.SetupToken = server.SetupToken
+	backupHandler.BusinessStore = businessService
 
 	var roleHandler = roles.NewHandler(requestBouncer)
 	roleHandler.DataStore = server.DataStore

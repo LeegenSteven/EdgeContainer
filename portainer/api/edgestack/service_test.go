@@ -109,7 +109,68 @@ func (f *fixture) request(t *testing.T, user, method, path string, body any) *ht
 }
 func (f *fixture) ok(t *testing.T, user, method, path string, body any, status int) map[string]any {
 	t.Helper()
-	w := f.request(t, user, method, path, body)
+	// These original user-flow fixtures represent packages already published
+	// before the administrator validation gate. New-gate tests use request
+	// directly and never receive this trusted legacy-fixture migration.
+	var legacy *ModelPackage
+	if user == "admin" && method == "POST" && path == "/admin/models" && status == 200 {
+		if model, ok := body.(ModelPackage); ok && model.Published {
+			copy := model
+			copy.Published = false
+			if copy.ModelID == "" {
+				copy.ModelID = "fixture-model"
+			}
+			body = copy
+			legacy = &copy
+		}
+	}
+	if user == "admin" && method == "POST" && strings.HasSuffix(path, "/publication") {
+		raw, _ := json.Marshal(body)
+		var p map[string]any
+		_ = json.Unmarshal(raw, &p)
+		if _, exists := p["metadataVersion"]; !exists {
+			modelID := strings.TrimSuffix(strings.TrimPrefix(path, "/admin/models/"), "/publication")
+			_ = f.s.db.View(func(tx *bolt.Tx) error {
+				p["metadataVersion"] = f.s.modelPolicy(tx, modelID).MetadataVersion
+				return nil
+			})
+			body = p
+		}
+	}
+	var w *httptest.ResponseRecorder
+	if legacy != nil {
+		w = httptest.NewRecorder()
+		respond(w, 200, *legacy)
+	} else {
+		w = f.request(t, user, method, path, body)
+	}
+	if legacy != nil && w.Code == 200 {
+		err := f.s.db.Update(func(tx *bolt.Tx) error {
+			legacy.Published = true
+			if e := put(tx, "models", legacy.ID, *legacy); e != nil {
+				return e
+			}
+			policy := f.s.modelPolicy(tx, legacy.ID)
+			policy.LegacyScoped = true
+			policy.ValidationStatus = "legacy_scoped"
+			policy.LegacyTaskScopes = map[string]PublicationScope{}
+			tasks, e := list[Task](tx, "tasks")
+			if e != nil {
+				return e
+			}
+			for _, task := range tasks {
+				device, e := read[Device](tx, "devices", task.DeviceID)
+				if e == nil && compatibleBody(task, device, *legacy) {
+					policy.AllowedTaskIDs = append(policy.AllowedTaskIDs, task.ID)
+					policy.LegacyTaskScopes[task.ID] = scopeFor(task, device)
+				}
+			}
+			return put(tx, "model-policies", legacy.ID, policy)
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
 	if w.Code != status {
 		t.Fatalf("%s %s got %d want %d: %s", method, path, w.Code, status, w.Body.String())
 	}

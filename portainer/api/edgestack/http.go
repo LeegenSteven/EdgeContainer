@@ -83,9 +83,31 @@ func (s *Service) Handler() http.Handler {
 	add("GET", "/summaries/{id}", s.getSummary, false)
 	for _, bucket := range []string{"devices", "tasks", "sources", "models"} {
 		b := bucket
-		add("GET", "/admin/"+b, func(w http.ResponseWriter, r *http.Request) error { return s.adminList(w, r, b) }, true)
+		add("GET", "/admin/"+b, func(w http.ResponseWriter, r *http.Request) error { return s.adminItems(w, r, b) }, true)
 		add("POST", "/admin/"+b, func(w http.ResponseWriter, r *http.Request) error { return s.provision(w, r, b) }, true)
+		add("GET", "/admin/"+b+"/{id}", func(w http.ResponseWriter, r *http.Request) error { return s.adminItem(w, r, b) }, true)
+		if b != "models" {
+			add("PATCH", "/admin/"+b+"/{id}", func(w http.ResponseWriter, r *http.Request) error { return s.adminPatch(w, r, b) }, true)
+		}
 	}
+
+	add("GET", "/admin/access-preview", s.adminAccessPreview, true)
+	for _, bucket := range []string{"operations", "audit"} {
+		b := bucket
+		add("GET", "/admin/"+b, func(w http.ResponseWriter, r *http.Request) error { return s.adminItems(w, r, b) }, true)
+		add("GET", "/admin/"+b+"/{id}", func(w http.ResponseWriter, r *http.Request) error { return s.adminItem(w, r, b) }, true)
+	}
+	add("POST", "/admin/imports/preview", s.importPreview, true)
+	add("POST", "/admin/imports/confirm", s.importConfirm, true)
+	add("POST", "/admin/models/{id}/validation-preview", s.validationPreview, true)
+	add("POST", "/admin/models/{id}/validations", s.validationConfirm, true)
+	add("GET", "/admin/models/{id}/validations", s.modelValidations, true)
+	add("GET", "/admin/settings/cloud", s.getCloudSettings, true)
+	add("POST", "/admin/settings/cloud/test", s.testCloudSettings, true)
+	add("PUT", "/admin/settings/cloud", s.updateCloudSettings, true)
+	add("PATCH", "/admin/settings/cloud", s.updateCloudSettings, true)
+	add("POST", "/admin/settings/cloud/restore-hostfile", s.restoreCloudHostfile, true)
+	add("POST", "/admin/ingest-credentials/{id}/rotate", s.rotateCredential, true)
 	add("POST", "/admin/ingest-credentials", s.createCredential, true)
 	add("GET", "/admin/ingest-credentials", s.credentials, true)
 	add("DELETE", "/admin/ingest-credentials/{id}", s.revokeCredential, true)
@@ -118,11 +140,11 @@ func (s *Service) admin(r *http.Request) error {
 	return nil
 }
 func (s *Service) canDevice(r *http.Request, p Principal, d Device) bool {
-	return allows(p, d.ACL) && s.opts.EndpointAccess != nil && s.opts.EndpointAccess(r, d.EndpointID)
+	return !d.Archived && allows(p, d.ACL) && s.opts.EndpointAccess != nil && s.opts.EndpointAccess(r, d.EndpointID)
 }
 func (s *Service) canTask(r *http.Request, p Principal, tx *bolt.Tx, t Task) bool {
 	d, err := read[Device](tx, "devices", t.DeviceID)
-	return err == nil && s.canDevice(r, p, d) && allows(p, t.ACL) && t.Target.EndpointID == d.EndpointID
+	return err == nil && !t.Archived && s.canDevice(r, p, d) && allows(p, t.ACL) && t.Target.EndpointID == d.EndpointID
 }
 func (s *Service) authorizedTask(r *http.Request, tx *bolt.Tx, id string) (Task, error) {
 	p, e := s.principal(r)
@@ -154,7 +176,7 @@ func (s *Service) authorizedDevice(r *http.Request, tx *bolt.Tx, id string) (Dev
 }
 
 func publicTask(t Task) any {
-	out := map[string]any{"id": t.ID, "deviceId": t.DeviceID, "name": t.Name, "kind": t.Kind, "state": t.State, "runtimeState": "unknown", "revision": t.Revision, "models": nonNil(t.Models), "dataLocations": publicDataLocations(t.DataLocations), "capabilities": nonNil(t.Capabilities)}
+	out := map[string]any{"id": t.ID, "deviceId": t.DeviceID, "name": t.Name, "description": t.Description, "kind": t.Kind, "state": t.State, "runtimeState": "unknown", "revision": t.Revision, "models": nonNil(t.Models), "dataLocations": publicDataLocations(t.DataLocations), "capabilities": nonNil(t.Capabilities)}
 	if t.VoiceOrigin != "" && contains(t.Capabilities, "voice-test") {
 		out["voiceTestUrl"] = "/api/edgestack/tasks/" + url.PathEscape(t.ID) + "/voice-test"
 	}
@@ -242,7 +264,7 @@ func (s *Service) publicDevice(r *http.Request, tx *bolt.Tx, d Device) (any, err
 	if s.opts.DeviceStatus != nil {
 		online, lastSeen = s.opts.DeviceStatus(r, d.EndpointID)
 	}
-	return map[string]any{"id": d.ID, "name": d.Name, "online": online, "lastSeenAt": lastSeen, "tasks": outTasks, "sources": outSources, "recentEvents": recent, "lastInteractionAt": lastInteraction}, nil
+	return map[string]any{"id": d.ID, "name": d.Name, "description": d.Description, "online": online, "lastSeenAt": lastSeen, "tasks": outTasks, "sources": outSources, "recentEvents": recent, "lastInteractionAt": lastInteraction}, nil
 }
 
 func (s *Service) devices(w http.ResponseWriter, r *http.Request) error {
@@ -541,8 +563,8 @@ func (s *Service) adminList(w http.ResponseWriter, r *http.Request, bucket strin
 	return e
 }
 func (s *Service) provision(w http.ResponseWriter, r *http.Request, bucket string) error {
-	if e := s.admin(r); e != nil {
-		return e
+	if err := s.admin(r); err != nil {
+		return err
 	}
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
@@ -551,21 +573,31 @@ func (s *Service) provision(w http.ResponseWriter, r *http.Request, bucket strin
 		switch bucket {
 		case "devices":
 			var d Device
-			if e := decode(w, r, &d); e != nil {
-				return e
+			if err := decode(w, r, &d); err != nil {
+				return err
+			}
+			if _, e := read[Device](tx, bucket, d.ID); e == nil {
+				return fail(409, "object_exists")
 			}
 			if !validID(d.ID) || strings.TrimSpace(d.Name) == "" || d.EndpointID <= 0 || !s.opts.EndpointAccess(r, d.EndpointID) {
 				return fail(400, "invalid_device")
 			}
-			if prior, e := read[Device](tx, bucket, d.ID); e == nil && prior.EndpointID != d.EndpointID {
-				return fail(409, "device_target_immutable")
+			if e := s.validateBusinessACL(d.ACL); e != nil {
+				return e
 			}
+			d.MetadataVersion = 1
 			out = d
-			return put(tx, bucket, d.ID, d)
+			if e := put(tx, bucket, d.ID, d); e != nil {
+				return e
+			}
+			return s.auditTx(tx, r, "device.create", bucket, d.ID, []string{"registration", "acl"})
 		case "tasks":
 			var t Task
-			if e := decode(w, r, &t); e != nil {
-				return e
+			if err := decode(w, r, &t); err != nil {
+				return err
+			}
+			if _, e := read[Task](tx, bucket, t.ID); e == nil {
+				return fail(409, "object_exists")
 			}
 			d, e := read[Device](tx, "devices", t.DeviceID)
 			if e != nil {
@@ -574,22 +606,28 @@ func (s *Service) provision(w http.ResponseWriter, r *http.Request, bucket strin
 			if !validID(t.ID) || t.Name == "" || t.Kind == "" || t.Target.EndpointID != d.EndpointID || t.Target.StackID <= 0 || !validID(t.Target.ServiceID) {
 				return fail(400, "invalid_task")
 			}
-			if t.VoiceOrigin != "" {
-				u, e := url.Parse(t.VoiceOrigin)
-				if e != nil || u.Host == "" || (u.Scheme != "http" && u.Scheme != "https") || u.User != nil || (u.Path != "" && u.Path != "/") || u.RawQuery != "" || u.Fragment != "" {
-					return fail(400, "invalid_voice_origin")
-				}
+			if e := validateTaskMetadata(t); e != nil {
+				return e
+			}
+			if e := s.validateBusinessACL(t.ACL); e != nil {
+				return e
 			}
 			if s.opts.ValidateTask != nil {
-				if err := s.opts.ValidateTask(r.Context(), t); err != nil {
+				if e := s.opts.ValidateTask(r.Context(), t); e != nil {
 					return fail(400, "invalid_task_target")
 				}
 			}
-			if previous, e := read[Task](tx, bucket, t.ID); e == nil {
-				t.Revision = previous.Revision + 1
-			} else {
-				t.Revision = 1
+			rows, e := list[Task](tx, bucket)
+			if e != nil {
+				return e
 			}
+			for _, other := range rows {
+				if other.Target.StackID == t.Target.StackID {
+					return fail(409, "stack_already_registered")
+				}
+			}
+			t.MetadataVersion = 1
+			t.Revision = 1
 			for i := range t.Models {
 				t.Models[i].ObservedPackageID = ""
 				t.Models[i].ObservedModelID = ""
@@ -597,65 +635,59 @@ func (s *Service) provision(w http.ResponseWriter, r *http.Request, bucket strin
 				t.Models[i].ObservedAt = time.Time{}
 				t.Models[i].State = "unobserved"
 			}
-			// Isolated stack ownership is exclusive. Business metadata cannot
-			// register a second task that mutates somebody else's deployment.
-			rows, e := list[Task](tx, bucket)
-			if e != nil {
+			out = t
+			if e := put(tx, bucket, t.ID, t); e != nil {
 				return e
 			}
-			for _, other := range rows {
-				if other.ID != t.ID && other.Target.StackID == t.Target.StackID {
-					return fail(409, "stack_already_registered")
-				}
-			}
-			out = t
-			return put(tx, bucket, t.ID, t)
+			return s.auditTx(tx, r, "task.create", bucket, t.ID, []string{"registration", "acl"})
 		case "sources":
 			var source Source
-			if e := decode(w, r, &source); e != nil {
-				return e
+			if err := decode(w, r, &source); err != nil {
+				return err
+			}
+			if _, e := read[Source](tx, bucket, source.ID); e == nil {
+				return fail(409, "object_exists")
 			}
 			task, e := read[Task](tx, "tasks", source.TaskID)
-			if e != nil || task.DeviceID != source.DeviceID || !validID(source.ID) || source.Type == "" {
+			if e != nil || task.DeviceID != source.DeviceID || !validID(source.ID) || source.Name == "" || !validSourceType(source.Type) {
 				return fail(400, "invalid_source")
 			}
-			if previous, e := read[Source](tx, bucket, source.ID); e == nil {
-				if previous.TaskID != source.TaskID || previous.DeviceID != source.DeviceID {
-					return fail(409, "source_target_immutable")
-				}
-				source.LastSeenAt = previous.LastSeenAt
-				source.LastEventAt = previous.LastEventAt
-				source.Checkpoint = previous.Checkpoint
-				source.Coverage = previous.Coverage
-				source.Status = previous.Status
-			} else {
-				source.Status = "unconfigured"
-				source.LastSeenAt = time.Time{}
-				source.LastEventAt = time.Time{}
-				source.Checkpoint = nil
-				source.Coverage = nil
-			}
+			source.MetadataVersion = 1
+			source.Status = "unconfigured"
+			source.LastSeenAt = time.Time{}
+			source.LastEventAt = time.Time{}
+			source.Checkpoint = nil
+			source.Coverage = nil
+			source.ErrorCode = ""
 			out = source
-			return put(tx, bucket, source.ID, source)
-		case "models":
-			var model ModelPackage
-			if e := decode(w, r, &model); e != nil {
+			if e := put(tx, bucket, source.ID, source); e != nil {
 				return e
 			}
-			if !validID(model.ID) || model.Name == "" || model.Version == "" || model.Slot == "" || len(model.TaskKinds) == 0 || len(model.Architectures) == 0 || !model.Immutable || !digest.MatchString(model.ModelHash) || !strings.Contains(model.Image, "@sha256:") {
-				return fail(400, "invalid_immutable_package")
-			}
-			imageParts := strings.Split(model.Image, "@")
-			if len(imageParts) != 2 || !digest.MatchString(imageParts[1]) {
-				return fail(400, "invalid_image_digest")
+			return s.auditTx(tx, r, "source.create", bucket, source.ID, []string{"registration"})
+		case "models":
+			var model ModelPackage
+			if err := decode(w, r, &model); err != nil {
+				return err
 			}
 			if _, e := read[ModelPackage](tx, bucket, model.ID); e == nil {
 				return fail(409, "package_immutable")
 			}
+			if e := validateModelBody(model); e != nil {
+				return e
+			}
+			if model.Published {
+				return fail(400, "model_must_start_draft")
+			}
 			out = model
-			return put(tx, bucket, model.ID, model)
+			if e := put(tx, bucket, model.ID, model); e != nil {
+				return e
+			}
+			if e := put(tx, "model-policies", model.ID, s.modelPolicy(tx, model.ID)); e != nil {
+				return e
+			}
+			return s.auditTx(tx, r, "model.create", bucket, model.ID, []string{"immutablePackage"})
 		}
-		return fail(404, "not_found")
+		return errNotFound
 	})
 	if err == nil {
 		respond(w, 200, out)

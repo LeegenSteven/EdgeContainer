@@ -3,6 +3,10 @@
  * and polling timers. The native administrator experience remains the default. */
 (function () {
   'use strict';
+  // This standalone resource owns one set of router hooks and observers per
+  // document, even if a host accidentally includes the script twice.
+  if(window.__EDGESTACK_WORKSPACE_RUNTIME__)return;
+  window.__EDGESTACK_WORKSPACE_RUNTIME__=true;
   const buildVersion = '__EDGESTACK_VERSION__';
   const startupHash = location.hash;
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
@@ -46,12 +50,27 @@
   const workspaceMemory=new Map(),activityMemory=new Map();
   const modelPurpose=value=>({'asr-encoder':'语音识别',asr:'语音识别',llm:'对话',tts:'语音合成',vision:'视觉理解'})[value]||'用途待登记';
   const liveLabel=e=>eventRole(e)+(eventPhase(e.phase)?' · '+eventPhase(e.phase):'')+(integrationTest(e)?' · 接入测试':'');
-  let injector, router, auth;
+  let injector, router, auth, automaticNavigation;
   const apiRoot = new URL('api/edgestack/', document.baseURI);
   function normalView(v) { return views.includes(v) ? v : aliases[v] || 'space'; }
   function isAdmin() { return !!auth?.isPureAdmin(); }
   function routeParams() { const q = new URLSearchParams(location.hash.split('?')[1] || ''); return {view:normalView(q.get('view')),device:q.get('device') || null}; }
   function workspaceRoute() { return /portainer\.(?:workspace|edgestack)$/.test(router?.current?.name || ''); }
+  // Startup deep links and the native home success hook can run in the same
+  // turn. Keep their automatic redirect single-flight, and respect an already
+  // active workspace transition (including one initiated by the native router).
+  function openWorkspaceAutomatically(params) {
+    if(workspaceRoute()||automaticNavigation)return;
+    if(/portainer\.(?:workspace|edgestack)$/.test(router.transition?.to?.().name||''))return;
+    const request={};automaticNavigation=request;
+    const finish=()=>{if(automaticNavigation===request)automaticNavigation=null;};
+    try{Promise.resolve(router.go('portainer.workspace',params)).then(finish,error=>{finish();
+      // UI-Router's SUPERSEDED rejection means a newer navigation won. Only
+      // this expected cancellation is consumed; actual routing errors remain
+      // visible with their original diagnostic information.
+      if(error?.type!==2)console.error('EdgeStack workspace automatic navigation:',error);
+    });}catch(error){finish();throw error;}
+  }
   function setMode() {
     const authenticated=!!auth?.isAuthenticated(),preview=authenticated&&isAdmin()&&workspaceRoute();
     document.body.classList.toggle('edgestack-user',authenticated&&(!isAdmin()||preview));
@@ -258,7 +277,7 @@
     }
     async function summarize() {
       if(s.summaryBusy)return;const question=s.question.trim();s.summaryQuestion=question;s.summaryBusy=true;s.summary=null;render();
-      try{const to=new Date();const from=new Date(to.getTime()-Number(s.period)*3600000);const r=await api('POST','summaries',{deviceId:s.deviceId,from:from.toISOString(),to:to.toISOString(),question});if(!alive)return;s.summary=r;s.summaryBusy=['queued','pending','running','processing'].includes(r.status);if(s.summaryBusy)schedule(()=>pollSummary(r.id),1000);}
+      try{const to=new Date();const from=new Date(to.getTime()-Number(s.period)*3600000);let timeZone='Asia/Shanghai';try{timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone||timeZone;}catch(_){}const r=await api('POST','summaries',{deviceId:s.deviceId,from:from.toISOString(),to:to.toISOString(),question,timeZone});if(!alive)return;s.summary=r;s.summaryBusy=['queued','pending','running','processing'].includes(r.status);if(s.summaryBusy)schedule(()=>pollSummary(r.id),1000);}
       catch(e){s.error=e.message;s.summaryBusy=false;}finally{render();}
     }
     async function pollOperation(operationId) {
@@ -326,11 +345,11 @@
     router=injector.get('$state');auth=injector.get('Authentication');const registry=injector.get('$stateRegistry');
     function registerRoute(name,url){if(!registry.get(name))registry.register({name,url,data:{access:'restricted'},views:{'content@':{template:'<main data-edgestack-workspace class="ew-workspace"></main>',controller:['$element','$scope','$stateParams',function($element,$scope,$stateParams){setMode(true);nav();const destroy=Workspace($element[0],$stateParams);$scope.$on('$destroy',destroy);}]}}});}
     registerRoute('portainer.workspace','/workspace?view&device');registerRoute('portainer.edgestack','/edgestack?view&device&app');
-    injector.get('$transitions').onSuccess({},transition=>{nav();if(transition.to().name==='portainer.home'&&!isAdmin())router.go('portainer.workspace',{view:'space',device:null});});
+    injector.get('$transitions').onSuccess({},transition=>{nav();if(transition.to().name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});});
     let queued=false;new MutationObserver(()=>{if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;nav();});}}).observe(document.querySelector('#sideview')||document.body,{childList:true,subtree:true});
     nav();
-    if(/^#!\/(?:workspace|edgestack)(?:\?|$)/.test(startupHash)&&auth.isAuthenticated()){const q=new URLSearchParams(startupHash.split('?')[1]||'');router.go('portainer.workspace',{view:normalView(q.get('view')),device:q.get('device')||null});}
-    else if(router.current.name==='portainer.home'&&!isAdmin())router.go('portainer.workspace',{view:'space',device:null});
+    if(/^#!\/(?:workspace|edgestack)(?:\?|$)/.test(startupHash)&&auth.isAuthenticated()){const q=new URLSearchParams(startupHash.split('?')[1]||'');openWorkspaceAutomatically({view:normalView(q.get('view')),device:q.get('device')||null});}
+    else if(router.current.name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});
     window.EdgeStackWorkspace={version:buildVersion,mount:Workspace};return true;
   }
   // The mount hook also powers isolated offline tests; no authentication bypass is

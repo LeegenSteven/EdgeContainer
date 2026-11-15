@@ -65,9 +65,16 @@ func TestPublicationWithdrawalBlocksNewSelectionWithoutRevivingOnBootstrap(t *te
 	}
 	altered := model
 	altered.ModelHash = "sha256:" + strings.Repeat("c", 64)
-	if err := f.s.Bootstrap(context.Background(), BootstrapConfig{Models: []ModelPackage{altered}}); err == nil {
-		t.Fatal("publication exception allowed immutable package mutation")
+	if err := f.s.Bootstrap(context.Background(), BootstrapConfig{Models: []ModelPackage{altered}}); err != nil {
+		t.Fatal(err)
 	}
+	_ = f.s.db.View(func(tx *bolt.Tx) error {
+		stored, _ := read[ModelPackage](tx, "models", model.ID)
+		if stored.ModelHash != model.ModelHash {
+			t.Fatal("seed overwrote immutable package")
+		}
+		return nil
+	})
 }
 
 func TestPublicationBodyIsNarrowAndRequired(t *testing.T) {

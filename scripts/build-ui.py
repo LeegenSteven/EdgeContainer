@@ -33,7 +33,7 @@ def load_copy():
     return dict(sorted(result.items()))
 
 
-def build(index, output, server_image=None):
+def build(index, output, server_image=None, native_public=None):
     source_index = index.read_text()
     if 'data-edgestack-ui' in source_index:
         raise ValueError('Use the saved upstream index.html, not an already modified page.')
@@ -99,6 +99,17 @@ def build(index, output, server_image=None):
         'original_index_sha256': digest(source_index.encode()),
         'files': {str(p.relative_to(output)): digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name != 'manifest.json'},
     }
+    if native_public is not None:
+        if (native_public / 'index.html').read_bytes() != index.read_bytes():
+            raise ValueError('Native public directory must match the input index.html')
+        if not server_image:
+            raise ValueError('Bind a native frontend release to its immutable Server image')
+        manifest['native_frontend'] = {
+            'schemaVersion': 1,
+            'files': {str(p.relative_to(native_public)): digest(p.read_bytes())
+                      for p in sorted(native_public.rglob('*'))
+                      if p.is_file() and p.suffix != '.map'},
+        }
     (output / 'manifest.json').write_text(json.dumps(manifest, ensure_ascii=False, indent=2) + '\n')
     print(json.dumps(manifest, ensure_ascii=False, indent=2))
 
@@ -108,9 +119,10 @@ if __name__ == '__main__':
     parser.add_argument('--index', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--server-image', help='Immutable custom Server image (sha256 ID or reference pinned by digest).')
+    parser.add_argument('--native-public', type=Path, help='Newly compiled native public directory, included in the release hash manifest.')
     args = parser.parse_args()
     if args.server_image and not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})', args.server_image):
         parser.error('--server-image must be an immutable sha256 image reference')
     if args.output.exists() and any(args.output.iterdir()):
         parser.error('Output directory must be empty; use a new release directory.')
-    build(args.index, args.output, args.server_image)
+    build(args.index, args.output, args.server_image, args.native_public)

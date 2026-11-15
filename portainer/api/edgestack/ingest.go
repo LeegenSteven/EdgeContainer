@@ -1,6 +1,7 @@
 package edgestack
 
 import (
+	"context"
 	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/hex"
@@ -19,6 +20,58 @@ type credentialRecord struct {
 	Hash       string     `json:"hash"`
 }
 
+func (s *Service) createCredentialRecord(tx *bolt.Tx, r *http.Request, c Credential, rotatedFrom string) (Credential, string, error) {
+	if c.Name == "" || len(c.DeviceIDs) == 0 || len(c.TaskIDs) == 0 || len(c.SourceIDs) == 0 {
+		return c, "", fail(400, "explicit_scopes_required")
+	}
+	if len(c.Capabilities) == 0 {
+		c.Capabilities = []string{"ingest-events", "ingest-status"}
+	}
+	for _, cap := range c.Capabilities {
+		if !contains([]string{"ingest-events", "ingest-status", "observe-model"}, cap) {
+			return c, "", fail(400, "invalid_capability")
+		}
+	}
+	for _, id := range c.SourceIDs {
+		source, e := read[Source](tx, "sources", id)
+		if e != nil || source.Archived || !contains(c.DeviceIDs, source.DeviceID) || !contains(c.TaskIDs, source.TaskID) {
+			return c, "", fail(400, "invalid_scope")
+		}
+	}
+	for _, id := range c.DeviceIDs {
+		device, e := read[Device](tx, "devices", id)
+		if e != nil || device.Archived {
+			return c, "", fail(400, "invalid_scope")
+		}
+	}
+	for _, id := range c.TaskIDs {
+		task, e := read[Task](tx, "tasks", id)
+		if e != nil || task.Archived || !contains(c.DeviceIDs, task.DeviceID) {
+			return c, "", fail(400, "invalid_scope")
+		}
+	}
+	principal, e := s.principal(r)
+	if e != nil {
+		return c, "", e
+	}
+	c.ID = newID()
+	c.Revoked = false
+	c.CreatedAt = s.opts.Now().UTC()
+	c.CreatedByUserID = principal.UserID
+	c.LastUsedAt = time.Time{}
+	c.LastSuccessfulAt = time.Time{}
+	c.RevokedAt = time.Time{}
+	c.RotatedFromID = rotatedFrom
+	token := "es_ingest_" + newID() + newID()
+	hash := sha256.Sum256([]byte(token))
+	if e := put(tx, "credentials", c.ID, credentialRecord{c, hex.EncodeToString(hash[:])}); e != nil {
+		return c, "", e
+	}
+	if e := s.auditTx(tx, r, "credential.create", "credentials", c.ID, []string{"scope", "capabilities", "rotatedFromId"}); e != nil {
+		return c, "", e
+	}
+	return c, token, nil
+}
 func (s *Service) createCredential(w http.ResponseWriter, r *http.Request) error {
 	if e := s.admin(r); e != nil {
 		return e
@@ -27,60 +80,42 @@ func (s *Service) createCredential(w http.ResponseWriter, r *http.Request) error
 	if e := decode(w, r, &c); e != nil {
 		return e
 	}
-	if c.Name == "" || len(c.DeviceIDs) == 0 || len(c.TaskIDs) == 0 || len(c.SourceIDs) == 0 {
-		return fail(400, "explicit_scopes_required")
-	}
-	if len(c.Capabilities) == 0 {
-		c.Capabilities = []string{"ingest-events", "ingest-status"}
-	}
-	for _, cap := range c.Capabilities {
-		if !contains([]string{"ingest-events", "ingest-status", "observe-model"}, cap) {
-			return fail(400, "invalid_capability")
-		}
-	}
-	c.ID = newID()
-	c.Revoked = false
-	token := "es_ingest_" + newID() + newID()
-	hash := sha256.Sum256([]byte(token))
-	err := s.db.Update(func(tx *bolt.Tx) error {
-		for _, id := range c.SourceIDs {
-			source, e := read[Source](tx, "sources", id)
-			if e != nil || !contains(c.DeviceIDs, source.DeviceID) || !contains(c.TaskIDs, source.TaskID) {
-				return fail(400, "invalid_scope")
-			}
-		}
-		for _, id := range c.DeviceIDs {
-			if _, e := read[Device](tx, "devices", id); e != nil {
-				return fail(400, "invalid_scope")
-			}
-		}
-		for _, id := range c.TaskIDs {
-			task, e := read[Task](tx, "tasks", id)
-			if e != nil || !contains(c.DeviceIDs, task.DeviceID) {
-				return fail(400, "invalid_scope")
-			}
-		}
-		return put(tx, "credentials", c.ID, credentialRecord{c, hex.EncodeToString(hash[:])})
-	})
+	var token string
+	err := s.db.Update(func(tx *bolt.Tx) error { var e error; c, token, e = s.createCredentialRecord(tx, r, c, ""); return e })
 	if err == nil {
 		respond(w, 201, map[string]any{"id": c.ID, "token": token, "credential": c})
 	}
 	return err
 }
 func (s *Service) credentials(w http.ResponseWriter, r *http.Request) error {
+	return s.adminItems(w, r, "credentials")
+}
+func (s *Service) rotateCredential(w http.ResponseWriter, r *http.Request) error {
 	if e := s.admin(r); e != nil {
 		return e
 	}
-	items := []Credential{}
-	err := s.db.View(func(tx *bolt.Tx) error {
-		rows, e := list[credentialRecord](tx, "credentials")
-		for _, c := range rows {
-			items = append(items, c.Credential)
+	var p struct {
+		Name string `json:"name"`
+	}
+	if e := decode(w, r, &p); e != nil {
+		return e
+	}
+	var c Credential
+	var token string
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		old, e := read[credentialRecord](tx, "credentials", mux.Vars(r)["id"])
+		if e != nil {
+			return e
 		}
+		c = old.Credential
+		if p.Name != "" {
+			c.Name = p.Name
+		}
+		c, token, e = s.createCredentialRecord(tx, r, c, old.Credential.ID)
 		return e
 	})
 	if err == nil {
-		respond(w, 200, map[string]any{"items": items})
+		respond(w, 201, map[string]any{"id": c.ID, "token": token, "credential": c})
 	}
 	return err
 }
@@ -93,13 +128,34 @@ func (s *Service) revokeCredential(w http.ResponseWriter, r *http.Request) error
 		if e != nil {
 			return e
 		}
+		if replacement := r.URL.Query().Get("replacementId"); replacement != "" {
+			next, e := read[credentialRecord](tx, "credentials", replacement)
+			if e != nil || next.Credential.RotatedFromID != c.Credential.ID || next.Credential.LastSuccessfulAt.IsZero() {
+				return fail(409, "rotation_not_observed")
+			}
+		}
 		c.Credential.Revoked = true
-		return put(tx, "credentials", c.Credential.ID, c)
+		if c.Credential.RevokedAt.IsZero() {
+			c.Credential.RevokedAt = s.opts.Now().UTC()
+		}
+		if e := put(tx, "credentials", c.Credential.ID, c); e != nil {
+			return e
+		}
+		return s.auditTx(tx, r, "credential.revoke", "credentials", c.Credential.ID, []string{"revoked"})
 	})
 	if err == nil {
 		respond(w, 200, map[string]bool{"revoked": true})
 	}
 	return err
+}
+func (s *Service) touchCredential(tx *bolt.Tx, id string) error {
+	row, e := read[credentialRecord](tx, "credentials", id)
+	if e != nil {
+		return e
+	}
+	row.Credential.LastUsedAt = s.opts.Now().UTC()
+	row.Credential.LastSuccessfulAt = row.Credential.LastUsedAt
+	return put(tx, "credentials", id, row)
 }
 func ingestionCredential(tx *bolt.Tx, r *http.Request, capability string) (Credential, error) {
 	value := r.Header.Get("Authorization")
@@ -127,11 +183,15 @@ func scopedSource(tx *bolt.Tx, c Credential, sourceID, taskID, deviceID string) 
 	if err != nil {
 		return source, fail(403, "ingest_scope_denied")
 	}
-	if !source.Enabled || !contains(c.SourceIDs, source.ID) || !contains(c.TaskIDs, source.TaskID) || !contains(c.DeviceIDs, source.DeviceID) || source.TaskID != taskID || (deviceID != "" && source.DeviceID != deviceID) {
+	if source.Archived || !source.Enabled || !contains(c.SourceIDs, source.ID) || !contains(c.TaskIDs, source.TaskID) || !contains(c.DeviceIDs, source.DeviceID) || source.TaskID != taskID || (deviceID != "" && source.DeviceID != deviceID) {
 		return source, fail(403, "ingest_scope_denied")
 	}
 	task, err := read[Task](tx, "tasks", source.TaskID)
-	if err != nil || task.DeviceID != source.DeviceID {
+	if err != nil || task.Archived || task.DeviceID != source.DeviceID {
+		return source, fail(403, "ingest_scope_denied")
+	}
+	device, e := read[Device](tx, "devices", source.DeviceID)
+	if e != nil || device.Archived {
 		return source, fail(403, "ingest_scope_denied")
 	}
 	return source, nil
@@ -193,7 +253,7 @@ func (s *Service) ingestEvents(w http.ResponseWriter, r *http.Request) error {
 				return e
 			}
 		}
-		return nil
+		return s.touchCredential(tx, c.ID)
 	})
 	if err == nil {
 		respond(w, 200, map[string]int{"accepted": accepted, "duplicates": duplicates})
@@ -234,8 +294,12 @@ func (s *Service) ingestStatus(w http.ResponseWriter, r *http.Request) error {
 	// Serialize observations against a concurrent desired-state change.
 	s.modelMu.Lock()
 	defer s.modelMu.Unlock()
+	proofs, err := s.verifyValidationRuntime(r, p.SourceID, p.TaskID, p.DeviceID, p.Observations)
+	if err != nil {
+		return err
+	}
 	var source Source
-	err := s.db.Update(func(tx *bolt.Tx) error {
+	err = s.db.Update(func(tx *bolt.Tx) error {
 		c, e := ingestionCredential(tx, r, "ingest-status")
 		if e != nil {
 			return e
@@ -246,6 +310,9 @@ func (s *Service) ingestStatus(w http.ResponseWriter, r *http.Request) error {
 		}
 		if len(p.Observations) > 0 && !contains(c.Capabilities, "observe-model") {
 			return fail(403, "observation_scope_required")
+		}
+		if err := checkValidationRuntimeProofs(tx, source, proofs); err != nil {
+			return err
 		}
 		source.Status = p.Status
 		if p.Checkpoint != nil {
@@ -263,11 +330,14 @@ func (s *Service) ingestStatus(w http.ResponseWriter, r *http.Request) error {
 			source.LastEventAt = p.LastEventAt
 		}
 		for _, o := range p.Observations {
-			if err := s.applyObservation(tx, source, o); err != nil {
+			if err := s.applyObservation(tx, source, o, proofs); err != nil {
 				return err
 			}
 		}
-		return put(tx, "sources", source.ID, source)
+		if e := put(tx, "sources", source.ID, source); e != nil {
+			return e
+		}
+		return s.touchCredential(tx, c.ID)
 	})
 	if err == nil {
 		respond(w, 200, source)
@@ -275,7 +345,7 @@ func (s *Service) ingestStatus(w http.ResponseWriter, r *http.Request) error {
 	return err
 }
 
-func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation) error {
+func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation, proofs map[string]validationRuntimeProof) error {
 	task, err := read[Task](tx, "tasks", source.TaskID)
 	if err != nil {
 		return err
@@ -328,6 +398,7 @@ func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation) er
 		}
 	}
 	if op.ID != "" {
+		previousStatus := op.Status
 		if op.TaskID != task.ID || op.DeviceID != source.DeviceID || op.Slot != o.Slot || op.PackageID != binding.PackageID || op.Revision != task.Revision {
 			return fail(409, "observation_target_mismatch")
 		}
@@ -336,6 +407,19 @@ func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation) er
 		}
 		if o.State == "loaded" && o.ObservedAt.Before(op.CreatedAt) {
 			return fail(409, "observation_precedes_deployment")
+		}
+		if o.State == "loaded" && op.ValidationID != "" {
+			validation, err := read[ModelValidation](tx, "model-validations", op.ValidationID)
+			if err != nil {
+				return err
+			}
+			if validation.Status != "passed" {
+				model, err := read[ModelPackage](tx, "models", binding.PackageID)
+				proof, ok := proofs[op.ID]
+				if err != nil || !ok || proof.TaskRevision != task.Revision || proof.Target != task.Target || proof.PackageID != model.ID || proof.Image != model.Image || proof.ModelID != model.ModelID || proof.ModelHash != model.ModelHash || proof.OperationStatus != op.Status || !proof.OperationUpdatedAt.Equal(op.UpdatedAt) {
+					return fail(503, "model_runtime_unverified")
+				}
+			}
 		}
 		if o.State == "loaded" {
 			op.Status = "succeeded"
@@ -348,6 +432,14 @@ func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation) er
 		if err := put(tx, "operations", op.ID, op); err != nil {
 			return err
 		}
+		if err := s.finishValidation(tx, op, source, o); err != nil {
+			return err
+		}
+		if previousStatus != op.Status {
+			if err := s.auditOperation(tx, op, "model.runtime_observed"); err != nil {
+				return err
+			}
+		}
 	} else if o.State == "failed" {
 		return fail(409, "operation_required_for_failure")
 	}
@@ -359,4 +451,107 @@ func (s *Service) applyObservation(tx *bolt.Tx, source Source, o observation) er
 		binding.ObservedAt = o.ObservedAt.UTC()
 	}
 	return put(tx, "tasks", task.ID, task)
+}
+
+// Runtime verification is deliberately performed after scoped authentication and
+// outside any database transaction. Only validation operations require this
+// additional image proof; ordinary changes to historical packages retain their
+// existing loaded-model receipt contract.
+type validationRuntimeProof struct {
+	TaskID             string
+	TaskRevision       int
+	Target             Target
+	PackageID          string
+	Image              string
+	ModelID            string
+	ModelHash          string
+	OperationStatus    string
+	OperationUpdatedAt time.Time
+}
+
+func checkValidationRuntimeProofs(tx *bolt.Tx, source Source, proofs map[string]validationRuntimeProof) error {
+	for id, proof := range proofs {
+		task, taskErr := read[Task](tx, "tasks", proof.TaskID)
+		op, opErr := read[Operation](tx, "operations", id)
+		model, modelErr := read[ModelPackage](tx, "models", proof.PackageID)
+		if taskErr != nil || opErr != nil || modelErr != nil || task.ID != source.TaskID || task.Revision != proof.TaskRevision || task.Target != proof.Target || op.TaskID != task.ID || op.Revision != task.Revision || op.PackageID != proof.PackageID || op.Status != proof.OperationStatus || !op.UpdatedAt.Equal(proof.OperationUpdatedAt) || model.Image != proof.Image || model.ModelID != proof.ModelID || model.ModelHash != proof.ModelHash {
+			return fail(503, "model_runtime_unverified")
+		}
+	}
+	return nil
+}
+
+func (s *Service) verifyValidationRuntime(r *http.Request, sourceID, taskID, deviceID string, observations []observation) (map[string]validationRuntimeProof, error) {
+	proofs := make(map[string]validationRuntimeProof)
+	if len(observations) == 0 {
+		return proofs, nil
+	}
+	type candidate struct {
+		task  Task
+		model ModelPackage
+		op    Operation
+	}
+	candidates := make(map[string]candidate)
+	err := s.db.View(func(tx *bolt.Tx) error {
+		credential, err := ingestionCredential(tx, r, "ingest-status")
+		if err != nil {
+			return err
+		}
+		source, err := scopedSource(tx, credential, sourceID, taskID, deviceID)
+		if err != nil {
+			return err
+		}
+		if !contains(credential.Capabilities, "observe-model") {
+			return fail(403, "observation_scope_required")
+		}
+		task, err := read[Task](tx, "tasks", source.TaskID)
+		if err != nil {
+			return err
+		}
+		operations, err := list[Operation](tx, "operations")
+		if err != nil {
+			return err
+		}
+		for _, observation := range observations {
+			if observation.State != "loaded" {
+				continue
+			}
+			for _, op := range operations {
+				if op.ValidationID == "" || op.TaskID != task.ID || op.DeviceID != source.DeviceID || op.Slot != observation.Slot || op.Revision != task.Revision || (observation.OperationID != "" && observation.OperationID != op.ID) || (op.Status != "awaiting_observation" && !(op.Status == "failed" && op.ErrorCode == "model_observation_timeout")) {
+					continue
+				}
+				validation, err := read[ModelValidation](tx, "model-validations", op.ValidationID)
+				if err != nil {
+					return err
+				}
+				if validation.Status == "passed" {
+					continue
+				}
+				model, err := read[ModelPackage](tx, "models", op.PackageID)
+				if err != nil {
+					return err
+				}
+				if observation.ModelID == model.ModelID && observation.ModelHash == model.ModelHash {
+					candidates[op.ID] = candidate{task, model, op}
+				}
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	for id, candidate := range candidates {
+		if s.opts.VerifyModelRuntime == nil {
+			return nil, fail(503, "model_runtime_unverified")
+		}
+		ctx, cancel := context.WithTimeout(r.Context(), 2*time.Second)
+		err := s.opts.VerifyModelRuntime(ctx, candidate.task, candidate.model)
+		cancel()
+		if err != nil {
+			return nil, fail(503, "model_runtime_unverified")
+		}
+		proofs[id] = validationRuntimeProof{TaskID: candidate.task.ID, TaskRevision: candidate.task.Revision, Target: candidate.task.Target, PackageID: candidate.model.ID, Image: candidate.model.Image, ModelID: candidate.model.ModelID, ModelHash: candidate.model.ModelHash, OperationStatus: candidate.op.Status, OperationUpdatedAt: candidate.op.UpdatedAt}
+	}
+	return proofs, nil
 }

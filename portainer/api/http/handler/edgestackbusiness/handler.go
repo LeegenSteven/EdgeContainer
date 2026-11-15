@@ -12,15 +12,44 @@ import (
 	"github.com/portainer/portainer/api/dataservices"
 	dockerclient "github.com/portainer/portainer/api/docker/client"
 	"github.com/portainer/portainer/api/edgestack"
+	"github.com/portainer/portainer/api/http/offlinegate"
 	"github.com/portainer/portainer/api/http/security"
 	edgestackservice "github.com/portainer/portainer/api/internal/edge/edgestacks"
 )
 
 // New keeps business authorization additive to the existing Portainer session
 // and endpoint/group authorization. No existing administration route changes.
-func New(ctx context.Context, bouncer security.BouncerService, store dataservices.DataStore, files portainer.FileService, stacks *edgestackservice.Service, factory *dockerclient.ClientFactory) (*edgestack.Service, error) {
+func New(ctx context.Context, bouncer security.BouncerService, store dataservices.DataStore, files portainer.FileService, stacks *edgestackservice.Service, factory *dockerclient.ClientFactory, gates ...*offlinegate.OfflineGate) (*edgestack.Service, error) {
 	dispatcher := &Dispatcher{store: store, files: files}
+	bootstrapDisabled, err := edgestack.StartupBootstrapDisabled(filepath.Join(files.GetDatastorePath(), "edgestack"))
+	if err != nil {
+		return nil, errors.New("unable to check business recovery state")
+	}
+	validateACL := func(acl edgestack.ACL) error {
+		for _, id := range acl.UserIDs {
+			if id <= 0 {
+				return errors.New("invalid business user")
+			}
+			if _, err := store.User().Read(portainer.UserID(id)); err != nil {
+				return errors.New("business user does not exist")
+			}
+		}
+		for _, id := range acl.TeamIDs {
+			if id <= 0 {
+				return errors.New("invalid business team")
+			}
+			if _, err := store.Team().Read(portainer.TeamID(id)); err != nil {
+				return errors.New("business team does not exist")
+			}
+		}
+		return nil
+	}
+	var lease func() (func(), error)
+	if len(gates) > 0 && gates[0] != nil {
+		lease = func() (func(), error) { return gates[0].ReadLease(time.Minute) }
+	}
 	var voiceTestHTML []byte
+	mounts := newMountProvider(store, factory)
 	if path := os.Getenv("EDGESTACK_VOICE_TEST_FILE"); path != "" {
 		var err error
 		voiceTestHTML, err = os.ReadFile(path)
@@ -29,6 +58,30 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		}
 	}
 	service, err := edgestack.Open(filepath.Join(files.GetDatastorePath(), "edgestack", "business.db"), edgestack.Options{
+		ValidateACL: validateACL, BackgroundWriteLease: lease,
+		InspectAccess: func(userID, endpointID int) (edgestack.Principal, bool, error) {
+			user, err := store.User().Read(portainer.UserID(userID))
+			if err != nil {
+				return edgestack.Principal{}, false, err
+			}
+			memberships, err := store.TeamMembership().TeamMembershipsByUserID(user.ID)
+			if err != nil {
+				return edgestack.Principal{}, false, err
+			}
+			p := edgestack.Principal{UserID: userID, Admin: user.Role == portainer.AdministratorRole}
+			for _, member := range memberships {
+				p.TeamIDs = append(p.TeamIDs, int(member.TeamID))
+			}
+			endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(endpointID))
+			if err != nil {
+				return p, false, err
+			}
+			group, err := store.EndpointGroup().Read(endpoint.GroupID)
+			if err != nil {
+				return p, false, err
+			}
+			return p, p.Admin || security.AuthorizedEndpointAccess(endpoint, group, user.ID, memberships), nil
+		},
 		Authenticated: bouncer.AuthenticatedAccess, AdminAccess: bouncer.AdminAccess,
 		Authenticate: func(r *http.Request) (edgestack.Principal, error) {
 			// Re-run the original authenticator when delayed results are
@@ -64,7 +117,7 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		},
 		Dispatcher: dispatcher, ValidateTask: dispatcher.ValidateTask, Provider: edgestack.NewDeepSeekProviderFromEnv(),
 		VoiceTestHTML: voiceTestHTML,
-		MountProvider: newMountProvider(store, factory),
+		MountProvider: mounts, VerifyModelRuntime: modelRuntimeVerifier(mounts),
 		DeviceStatus: func(_ *http.Request, id int) (bool, time.Time) {
 			endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(id))
 			if err != nil || endpoint.LastCheckInDate == 0 {
@@ -77,11 +130,21 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 	if err != nil {
 		return nil, errors.New("unable to open EdgeStack business database")
 	}
-	if path := os.Getenv("EDGESTACK_BOOTSTRAP_FILE"); path != "" {
+	// Restoring must never replay operator deployment configuration. Older
+	// archives without a business registry require explicit administrator import.
+	if path := os.Getenv("EDGESTACK_BOOTSTRAP_FILE"); path != "" && !bootstrapDisabled {
 		if err := bootstrap(ctx, service, store, files, stacks, path); err != nil {
 			service.Close()
 			return nil, err
 		}
+	}
+	if err := service.ApplyRestorePolicy(func(id int) bool { _, err := store.Endpoint().Endpoint(portainer.EndpointID(id)); return err == nil }, func(acl edgestack.ACL) bool { return validateACL(acl) == nil }); err != nil {
+		service.Close()
+		return nil, errors.New("unable to finalize business database restoration")
+	}
+	if err := service.Prune(); err != nil {
+		service.Close()
+		return nil, errors.New("unable to apply business retention policy")
 	}
 	go service.RunRetention(ctx)
 	return service, nil

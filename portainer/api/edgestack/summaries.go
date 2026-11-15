@@ -28,6 +28,12 @@ func (s *Service) createSummary(w http.ResponseWriter, r *http.Request) error {
 	if e := decode(w, r, &request); e != nil {
 		return e
 	}
+	timeZone, _, e := summaryTimeZone(request.TimeZone)
+	if e != nil {
+		return e
+	}
+	request.TimeZone = timeZone
+	request.From, request.To = request.From.UTC(), request.To.UTC()
 	if request.DeviceID == "" || request.From.IsZero() || !request.From.Before(request.To) || request.To.Sub(request.From) > Retention || request.To.After(s.opts.Now().Add(time.Minute)) || utf8.RuneCountInString(request.Question) > 2000 {
 		return fail(400, "invalid_summary_request")
 	}
@@ -58,15 +64,9 @@ func (s *Service) createSummary(w http.ResponseWriter, r *http.Request) error {
 		evidence = append(evidence, Evidence{Ref: "evt:" + event.EventID, EventID: event.EventID, Text: event.Text, OccurredAt: event.OccurredAt, Type: event.Type, Provenance: event.Provenance, Phase: event.Phase})
 	}
 	request.Coverage = coverage
-	var secrets []string
-	var redactionErr error
-	if len(evidence) > 0 {
-		if provider, ok := s.opts.Provider.(redactionSecretProvider); ok {
-			secrets, redactionErr = provider.RedactionSecrets()
-		}
-	}
+	provider, secrets, redactionErr := s.freezeSummaryProvider()
 	request, evidence = redactSummaryInput(request, evidence, secrets)
-	result := Summary{ID: newID(), Status: "no_data", Title: "交互摘要", Topics: []Topic{}, Uncertainties: []string{}, Coverage: coverage, Evidence: evidence}
+	result := Summary{ID: newID(), Status: "no_data", Title: "交互摘要", Topics: []Topic{}, Uncertainties: []string{}, Coverage: coverage, Evidence: evidence, UsedTimeZone: timeZone}
 	if len(evidence) == 0 {
 		result.Title = "所选时间范围暂无记录"
 		result.Summary = "所选时间范围内没有可用的对话或观察记录。"
@@ -76,7 +76,7 @@ func (s *Service) createSummary(w http.ResponseWriter, r *http.Request) error {
 		if redactionErr != nil {
 			result.Status = "failed"
 			result.ErrorCode = providerCode(redactionErr)
-		} else if s.opts.Provider == nil {
+		} else if provider == nil {
 			result.Status = "failed"
 			result.ErrorCode = "provider_not_configured"
 		} else {
@@ -87,8 +87,9 @@ func (s *Service) createSummary(w http.ResponseWriter, r *http.Request) error {
 				return fail(429, "summary_capacity_reached")
 			}
 			ctx, cancel := context.WithTimeout(r.Context(), 60*time.Second)
-			generated, err := s.opts.Provider.Summarize(ctx, request, evidence)
+			generated, err := provider.Summarize(ctx, request, evidence)
 			cancel()
+			generated = redactGeneratedSummary(generated, secrets)
 			if err != nil {
 				result.Status = "failed"
 				result.ErrorCode = providerCode(err)

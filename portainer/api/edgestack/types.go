@@ -23,9 +23,12 @@ type ACL struct {
 }
 
 type Device struct {
-	ID         string `json:"id"`
-	Name       string `json:"name"`
-	EndpointID int    `json:"endpointId"`
+	MetadataVersion int    `json:"metadataVersion"`
+	Description     string `json:"description,omitempty"`
+	Archived        bool   `json:"archived"`
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	EndpointID      int    `json:"endpointId"`
 	ACL
 	Architecture string `json:"architecture,omitempty"`
 }
@@ -50,13 +53,19 @@ type ModelBinding struct {
 }
 
 type Task struct {
-	ID       string `json:"id"`
-	DeviceID string `json:"deviceId"`
-	Name     string `json:"name"`
-	Kind     string `json:"kind"`
-	State    string `json:"state"`
-	Revision int    `json:"revision"`
-	Target   Target `json:"target"`
+	MetadataVersion int    `json:"metadataVersion"`
+	Description     string `json:"description,omitempty"`
+	Archived        bool   `json:"archived"`
+	TestTask        bool   `json:"testTask"`
+	RuntimeBackend  string `json:"runtimeBackend,omitempty"`
+	TemplateID      string `json:"templateId,omitempty"`
+	ID              string `json:"id"`
+	DeviceID        string `json:"deviceId"`
+	Name            string `json:"name"`
+	Kind            string `json:"kind"`
+	State           string `json:"state"`
+	Revision        int    `json:"revision"`
+	Target          Target `json:"target"`
 	ACL
 	Models        []ModelBinding    `json:"models"`
 	DataLocations []json.RawMessage `json:"dataLocations"`
@@ -69,6 +78,8 @@ type Task struct {
 }
 
 type ModelPackage struct {
+	RuntimeBackend  string            `json:"runtimeBackend,omitempty"`
+	TemplateIDs     []string          `json:"templateIds,omitempty"`
 	ID              string            `json:"id"`
 	Name            string            `json:"name"`
 	Version         string            `json:"version"`
@@ -86,18 +97,21 @@ type ModelPackage struct {
 }
 
 type Source struct {
-	ID          string          `json:"id"`
-	DeviceID    string          `json:"deviceId"`
-	TaskID      string          `json:"taskId"`
-	Name        string          `json:"name"`
-	Type        string          `json:"type"`
-	Enabled     bool            `json:"enabled"`
-	Status      string          `json:"status"`
-	LastSeenAt  time.Time       `json:"lastSeenAt,omitempty"`
-	LastEventAt time.Time       `json:"lastEventAt,omitempty"`
-	Checkpoint  json.RawMessage `json:"checkpoint,omitempty"`
-	Coverage    json.RawMessage `json:"coverage,omitempty"`
-	ErrorCode   string          `json:"errorCode,omitempty"`
+	MetadataVersion int             `json:"metadataVersion"`
+	Description     string          `json:"description,omitempty"`
+	Archived        bool            `json:"archived"`
+	ID              string          `json:"id"`
+	DeviceID        string          `json:"deviceId"`
+	TaskID          string          `json:"taskId"`
+	Name            string          `json:"name"`
+	Type            string          `json:"type"`
+	Enabled         bool            `json:"enabled"`
+	Status          string          `json:"status"`
+	LastSeenAt      time.Time       `json:"lastSeenAt,omitempty"`
+	LastEventAt     time.Time       `json:"lastEventAt,omitempty"`
+	Checkpoint      json.RawMessage `json:"checkpoint,omitempty"`
+	Coverage        json.RawMessage `json:"coverage,omitempty"`
+	ErrorCode       string          `json:"errorCode,omitempty"`
 }
 
 type Event struct {
@@ -130,17 +144,24 @@ type Coverage struct {
 }
 
 type Credential struct {
-	ID           string   `json:"id"`
-	Name         string   `json:"name"`
-	DeviceIDs    []string `json:"deviceIds"`
-	SourceIDs    []string `json:"sourceIds"`
-	TaskIDs      []string `json:"taskIds"`
-	Capabilities []string `json:"capabilities"`
-	Hash         string   `json:"-"`
-	Revoked      bool     `json:"revoked"`
+	CreatedAt        time.Time `json:"createdAt,omitempty"`
+	CreatedByUserID  int       `json:"createdByUserId,omitempty"`
+	LastUsedAt       time.Time `json:"lastUsedAt,omitempty"`
+	LastSuccessfulAt time.Time `json:"lastSuccessfulAt,omitempty"`
+	RevokedAt        time.Time `json:"revokedAt,omitempty"`
+	RotatedFromID    string    `json:"rotatedFromId,omitempty"`
+	ID               string    `json:"id"`
+	Name             string    `json:"name"`
+	DeviceIDs        []string  `json:"deviceIds"`
+	SourceIDs        []string  `json:"sourceIds"`
+	TaskIDs          []string  `json:"taskIds"`
+	Capabilities     []string  `json:"capabilities"`
+	Hash             string    `json:"-"`
+	Revoked          bool      `json:"revoked"`
 }
 
 type Preview struct {
+	Purpose           string    `json:"purpose,omitempty"`
 	ID                string    `json:"id"`
 	UserID            int       `json:"-"`
 	TaskID            string    `json:"taskId"`
@@ -157,6 +178,10 @@ type Preview struct {
 }
 
 type Operation struct {
+	ActorUserID       int       `json:"actorUserId,omitempty"`
+	Target            Target    `json:"target"`
+	Purpose           string    `json:"purpose,omitempty"`
+	ValidationID      string    `json:"validationId,omitempty"`
 	ID                string    `json:"id"`
 	TaskID            string    `json:"taskId"`
 	DeviceID          string    `json:"deviceId"`
@@ -186,6 +211,7 @@ type Topic struct {
 }
 
 type SummaryRequest struct {
+	TimeZone string    `json:"timeZone,omitempty"`
 	DeviceID string    `json:"deviceId"`
 	From     time.Time `json:"from"`
 	To       time.Time `json:"to"`
@@ -194,6 +220,7 @@ type SummaryRequest struct {
 }
 
 type Summary struct {
+	UsedTimeZone  string     `json:"usedTimeZone"`
 	ID            string     `json:"id"`
 	Status        string     `json:"status"`
 	Title         string     `json:"title"`
@@ -243,15 +270,20 @@ type RuntimeProvider interface {
 }
 
 type Options struct {
-	Authenticate   func(*http.Request) (Principal, error)
-	EndpointAccess func(*http.Request, int) bool
-	Authenticated  func(http.Handler) http.Handler
-	AdminAccess    func(http.Handler) http.Handler
-	Dispatcher     Dispatcher
-	ValidateTask   func(context.Context, Task) error
-	Provider       Provider
-	Now            func() time.Time
-	DeviceStatus   func(*http.Request, int) (bool, time.Time)
-	VoiceTestHTML  []byte
-	MountProvider  MountProvider
+	Cloud                *CloudOptions
+	ValidateACL          func(ACL) error
+	InspectAccess        func(int, int) (Principal, bool, error)
+	BackgroundWriteLease func() (func(), error)
+	Authenticate         func(*http.Request) (Principal, error)
+	EndpointAccess       func(*http.Request, int) bool
+	Authenticated        func(http.Handler) http.Handler
+	AdminAccess          func(http.Handler) http.Handler
+	Dispatcher           Dispatcher
+	ValidateTask         func(context.Context, Task) error
+	VerifyModelRuntime   func(context.Context, Task, ModelPackage) error
+	Provider             Provider
+	Now                  func() time.Time
+	DeviceStatus         func(*http.Request, int) (bool, time.Time)
+	VoiceTestHTML        []byte
+	MountProvider        MountProvider
 }

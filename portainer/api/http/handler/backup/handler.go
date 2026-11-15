@@ -5,6 +5,7 @@ import (
 	"net/http"
 
 	"github.com/portainer/portainer/api/adminmonitor"
+	operations "github.com/portainer/portainer/api/backup"
 	"github.com/portainer/portainer/api/dataservices"
 	"github.com/portainer/portainer/api/http/offlinegate"
 	"github.com/portainer/portainer/api/http/security"
@@ -23,6 +24,7 @@ type Handler struct {
 	shutdownTrigger context.CancelFunc
 	adminMonitor    *adminmonitor.Monitor
 	SetupToken      string
+	BusinessStore   operations.BusinessStore
 }
 
 // NewHandler creates an new instance of backup handler
