@@ -12,6 +12,9 @@
   const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
   const items = value => Array.isArray(value) ? value : value?.items || [];
   const id = value => String(value?.id ?? '');
+  const summaryPeriods = [['1','最近 1 小时'],['6','最近 6 小时'],['24','最近 24 小时'],['168','最近 7 天']];
+  const operationFinished = status => ['succeeded','completed','applied','failed','cancelled','rejected','needs_review'].includes(status);
+  const statusRefreshInterval = 30000;
   const views = ['space', 'tasks', 'interactions', 'library'];
   const titles = {space:'我的空间', tasks:'我的任务', interactions:'互动记录', library:'模型与数据'};
   const aliases = {devices:'space', apps:'tasks', deploy:'tasks', models:'library', events:'interactions'};
@@ -34,7 +37,7 @@
   };
   const icon = (name, cls = '') => `<svg class="ew-icon ${cls}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${iconPaths[name] || iconPaths.info}</svg>`;
   const time = value => {const d=new Date(typeof value==='number'&&value<1e12?value*1000:value);return !value||!Number.isFinite(d.getTime())||d.getUTCFullYear()<2000?'尚无记录':d.toLocaleString('zh-CN',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'});};
-  const stateLabel = value => ({running:'运行中',ready:'已就绪',stopped:'已停止',exited:'已停止',paused:'已暂停',unknown:'待确认',unobserved:'尚未观察到',loaded:'已加载',registered:'已登记',configured:'已配置',verified:'已核验',pending:'等待中',degraded:'需关注',failed:'未完成',succeeded:'已完成',completed:'已完成',applying:'正在应用',dispatching:'正在下发',awaiting_observation:'等待设备确认',applied:'已应用',queued:'等待设备接收'})[value] || '待确认';
+  const stateLabel = value => ({running:'运行中',ready:'已就绪',stopped:'已停止',exited:'已停止',paused:'已暂停',unknown:'待确认',unobserved:'尚未观察到',needs_review:'需核对',cancelled:'已取消',rejected:'未提交',loaded:'已加载',registered:'已登记',configured:'已配置',verified:'已核验',pending:'等待中',degraded:'需关注',failed:'未完成',succeeded:'已完成',completed:'已完成',applying:'正在应用',dispatching:'正在下发',awaiting_observation:'等待设备确认',applied:'已应用',queued:'等待设备接收'})[value] || '待确认';
   const taskRuntime=t=>t.runtimeState==='running'?'任务实例运行中':'运行状态待确认';
   const eventTypeGroups={all:'',conversation:'voice.user_utterance,voice.assistant_reply',vision:'camera.observation',playback:'voice.playback_state'};
   const taskKind = value => ({voice:'语音助手',speech:'语音交互',audio:'语音交互','voice-test':'语音接入测试',camera:'视觉观察',vision:'视觉观察',web:'网页应用',workflow:'业务流程',application:'业务应用',app:'业务应用',inference:'本地推理'})[value] || '业务任务';
@@ -99,11 +102,27 @@
     const root = element.querySelector('[data-edgestack-workspace]') || element;
     let alive = true, sequence = 0,eventBaseline=false,polling=null,eventGeneration=0;const baselineDevices=new Set();
     const ownerKey=String(auth?.getUserDetails()?.ID||'session')+':'+(isAdmin()?'admin':'user'),memoryKey=ownerKey+':'+normalView(params.view);
-    const remembered=workspaceMemory.get(memoryKey)||{query:'',filter:'all',layout:'space',libraryLayout:'details',scene:{x:0,y:0},drawer:{}};
+    const remembered=workspaceMemory.get(memoryKey)||{query:'',filter:'all',layout:matchMedia('(max-width: 640px)').matches?'list':'space',libraryLayout:'details',scene:{x:0,y:0},drawer:{}};
     if(!activityMemory.has(ownerKey))activityMemory.set(ownerKey,{seen:new Set(),seenAt:new Map(),active:new Map(),slots:new Map(),columns:null});
     const activity=activityMemory.get(ownerKey),expiryScheduled=new Set();
+    const operationStorageKey = 'edgestack.user-model-operations:' + ownerKey;
+    const operations = new Map();
+    let operationIds = {};
+    if (params.device) {
+      try { operationIds = JSON.parse(sessionStorage.getItem(operationStorageKey)) || {}; } catch {}
+    }
+    for (const [taskId, saved] of Object.entries(operationIds)) {
+      if (saved?.deviceId === String(params.device)) operations.set(taskId,{checking:true});
+    }
+    const saveOperationIds = () => {
+      try { sessionStorage.setItem(operationStorageKey, JSON.stringify(operationIds)); } catch {}
+    };
+    const operationFor = task => operations.get(String(task.id));
+    let statusCheckedAt = null, statusStale = false, refreshing = 0;
     const requests = new Set(), timers = new Set(),sessionHints=new Map();
-    const s = {view:normalView(params.view), deviceId:String(params.device || ''), devices:[],loading:true,error:'',notice:'',tab:'overview',query:remembered.query,filter:remembered.filter,layout:remembered.layout,libraryLayout:remembered.libraryLayout,relationsOpen:false,events:[],eventPeriod:remembered.eventPeriod||'24',eventType:remembered.eventType||'all',eventSession:'',eventWindow:null,eventCursors:{},eventCoverage:null,eventCursor:'',eventLoading:false,drawerLoading:false,summary:null,summaryQuestion:'',summaryBusy:false,question:'',period:'24',models:null,modelTaskId:'',preview:null,previousModelLabel:'',operation:null,modelBusy:false,evidence:null};
+    const eventFailures = new Map(), eventCoverageByDevice = new Map();
+    let activeEvidence = [];
+    const s = {view:normalView(params.view), deviceId:String(params.device || ''), devices:[],loading:true,error:'',notice:'',tab:'overview',query:remembered.query,filter:remembered.filter,layout:remembered.layout,libraryLayout:remembered.libraryLayout,relationsOpen:false,events:[],eventPeriod:remembered.eventPeriod||'24',eventType:remembered.eventType||'all',eventSession:'',eventWindow:null,eventCursors:{},eventCoverage:null,eventCursor:'',eventLoading:false,drawerLoading:false,summary:null,summaryQuestion:'',summaryBusy:false,summaryError:'',summaryWindow:null,question:'',period:'24',models:null,modelTaskId:'',preview:null,previousModelLabel:'',modelBusy:false,evidence:null};
     const selected = () => s.devices.find(d => id(d) === s.deviceId);
     const allTasks = () => s.devices.flatMap(d => taskList(d).map(t=>({...t,deviceId:id(d),deviceName:d.name,online:d.online})));
     const filteredDevices = () => s.devices.filter(d=>(!s.query || (d.name||'').toLowerCase().includes(s.query.toLowerCase())) && (s.filter==='all'||(s.filter==='online'?d.online:!d.online)));
@@ -113,7 +132,7 @@
       const timeout=setTimeout(()=>controller.abort(),method==='POST'&&path==='summaries'?75000:25000);
       try {
         const response=await fetch(new URL(path.replace(/^\//,''),apiRoot),{method,credentials:'same-origin',signal:controller.signal,headers:body===undefined?{}:{'Content-Type':'application/json'},...(body===undefined?{}:{body:JSON.stringify(body)})});
-        if(!response.ok){let data={};try{data=await response.json();}catch{}if(response.status===401)router?.go('portainer.auth');const e=new Error(({401:'登录已过期，请重新登录。',403:'你没有这项操作的权限。',409:'任务已发生变化，请重新选择并预览。',503:'服务暂未连接。请稍后重试。'})[response.status]||data.message||({summary_capacity_reached:'当前生成小结的人较多，请稍后再试。',not_found:'这项资源已移除，或当前账号无权访问。',replacement_unavailable:'模型更换服务暂不可用。',invalid_summary_request:'请选择最近 7 天内的时间范围。',summary_range_too_large:'这个时间范围的记录较多，请缩小范围后重试。',summary_already_in_progress:'你已有一份小结正在生成，请稍后查看。'})[data.errorCode]||data.error||`暂时无法读取（${response.status}）`);e.status=response.status;throw e;}
+        if(!response.ok){let data={};try{data=await response.json();}catch{}if(response.status===401)router?.go('portainer.auth');const e=new Error(({model_change_in_progress:'这项任务已有模型更换正在进行，请先查看更新进度。',operation_in_progress:'这项任务已有模型更换正在进行，请先查看更新进度。',preview_expired:'预览已过期，请重新选择模型并预览。'})[data.errorCode]||({401:'登录已过期，请重新登录。',403:'你没有这项操作的权限。',409:'任务已发生变化，请重新选择并预览。',503:'服务暂未连接。请稍后重试。'})[response.status]||data.message||({summary_capacity_reached:'当前生成小结的人较多，请稍后再试。',not_found:'这项资源已移除，或当前账号无权访问。',replacement_unavailable:'模型更换服务暂不可用。',invalid_summary_request:'请选择最近 7 天内的时间范围。',summary_range_too_large:'所选时段的记录太多。请选择更短的时段后重试。',summary_already_in_progress:'你已有一份小结正在生成，请稍后查看。'})[data.errorCode]||data.error||`暂时无法读取（${response.status}）`);e.status=response.status;throw e;}
         return response.status===204?null:response.json();
       } catch(e) {if(e.name==='AbortError')throw new Error('请求超时，请重试。');throw e;}
       finally {requests.delete(controller);clearTimeout(timeout);}
@@ -139,11 +158,11 @@
     }
     function timeline(events,compact=false) {
       if(!events.length)return emptyInteractions();
-      return `<ol class="ew-timeline ${compact?'ew-timeline-compact':''}">${events.map(e=>`<li><span class="ew-event-icon">${icon(eventIcon(e))}</span><div><div class="ew-event-meta"><span>${esc(eventRole(e))}${eventPhase(e.phase)?' · '+esc(eventPhase(e.phase)):''}${integrationTest(e)?' <em class="ew-integration-label">接入测试</em>':''}</span><time>${esc(time(e.occurredAt||e.timestamp))}</time></div><p>${esc(eventText(e))}</p>${!compact&&e.deviceName?`<span class="ew-muted">${esc(e.deviceName)}</span>`:''}</div></li>`).join('')}</ol>`;
+      return `<ol class="ew-timeline ${compact?'ew-timeline-compact':''}">${events.map(e=>`<li><span class="ew-event-icon">${icon(eventIcon(e))}</span><div><div class="ew-event-meta"><span>${esc(eventRole(e))}${eventPhase(e.phase)?' · '+esc(eventPhase(e.phase)):''}${integrationTest(e)?' <em class="ew-integration-label">接入测试</em>':''}</span><time>${esc(time(e.occurredAt||e.timestamp))}</time></div><p>${esc(eventText(e))}</p>${!compact?`<span class="ew-event-device">${esc(s.devices.find(d=>id(d)===String(e.deviceId))?.name||'设备名称暂不可用')}</span>`:''}</div></li>`).join('')}</ol>`;
     }
     function header() {
       const online=s.devices.filter(d=>d.online).length;
-      return `<header class="ew-header"><div><div class="ew-eyebrow">YOUR EDGE, TOGETHER${window.EdgeStackDemo?' <span class="ew-demo-label">演示空间 · 模拟数据</span>':''}${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}</div><h1>${titles[s.view]}<span class="ew-heading-dot">.</span></h1><p>${({space:'每台设备都有自己的小天地。看看它们今天在忙什么。',tasks:'业务在设备上协作，进展在这里汇聚。',interactions:'留住与你的设备发生的每一次有意义的互动。',library:'了解任务使用的模型，以及数据安放的位置。'})[s.view]}</p></div><div class="ew-header-actions">${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}<button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button><span class="ew-avatar" aria-label="当前用户">${esc((auth?.getUserDetails()?.Username||auth?.getUserDetails()?.username||'我').slice(0,1).toUpperCase())}</span></div></header>${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}${s.loading?'':`<div class="ew-space-meta"><span><i class="ew-status-dot"></i>${online} 台管理在线</span><span>${s.devices.length} 台设备</span><span>${allTasks().length} 项业务任务</span><span class="ew-meta-tail">在空间里，了解每一台设备</span></div>`}`;
+      return `<header class="ew-header"><div><div class="ew-eyebrow">YOUR EDGE, TOGETHER${window.EdgeStackDemo?' <span class="ew-demo-label">演示空间 · 模拟数据</span>':''}${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}</div><h1>${titles[s.view]}<span class="ew-heading-dot">.</span></h1><p>${({space:'每台设备都有自己的小天地。看看它们今天在忙什么。',tasks:'业务在设备上协作，进展在这里汇聚。',interactions:'留住与你的设备发生的每一次有意义的互动。',library:'了解任务使用的模型，以及数据安放的位置。'})[s.view]}</p></div><div class="ew-header-actions">${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}<button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button><span class="ew-avatar" aria-label="当前用户">${esc((auth?.getUserDetails()?.Username||auth?.getUserDetails()?.username||'我').slice(0,1).toUpperCase())}</span></div></header>${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}${s.loading?'':`<div class="ew-space-meta"><span><i class="ew-status-dot"></i>${online} 台管理在线</span><span>${s.devices.length} 台设备</span><span>${allTasks().length} 项业务任务</span><span class="ew-status-freshness">${statusStale?'设备状态暂未更新 · 上次同步':'设备状态已同步'} <time>${esc(time(statusCheckedAt))}</time></span></div>`}`;
     }
     function space() {
       if(!s.devices.length)return empty('你的空间，等待第一位伙伴','请联系管理员接入设备并授予访问权限。接入后的设备会在这里拥有自己的工作台。');
@@ -159,11 +178,23 @@
     function rememberSessions(events){for(const event of events){if(!event.sessionId)continue;const at=Date.parse(event.occurredAt),hint=sessionHints.get(event.sessionId),user=/voice\.(user_utterance|transcript)$/.test(event.type);if(!hint)sessionHints.set(event.sessionId,{at,text:eventText(event).slice(0,24),user,deviceId:String(event.deviceId)});else{hint.at=Math.min(hint.at,at);if(user&&(!hint.user||at<=hint.at)){hint.text=eventText(event).slice(0,24);hint.user=true;}}}}
     function eventMatches(event){const types=eventTypeGroups[s.eventType];return (!types||types.split(',').includes(event.type))&&(!s.eventSession||event.sessionId===s.eventSession)&&Date.parse(event.occurredAt)>=Date.now()-Number(s.eventPeriod)*3600000;}
     function eventFilters(){const sessions=[...sessionHints.entries()].filter(([,hint])=>(!s.deviceId||hint.deviceId===s.deviceId)&&s.devices.some(d=>id(d)===hint.deviceId)).sort((a,b)=>b[1].at-a[1].at);return `<div class="ew-event-filters" aria-label="互动记录筛选"><label>时间范围<select name="eventPeriod"><option value="24" ${s.eventPeriod==='24'?'selected':''}>最近 24 小时</option><option value="168" ${s.eventPeriod==='168'?'selected':''}>最近 7 天</option></select></label><label>类型<select name="eventType">${[['all','全部'],['conversation','语音对话'],['vision','视觉观察'],['playback','播放状态']].map(([v,l])=>`<option value="${v}" ${s.eventType===v?'selected':''}>${l}</option>`).join('')}</select></label><label>一次会话<select name="eventSession"><option value="">全部会话</option>${s.eventSession&&!sessionHints.has(s.eventSession)?`<option selected value="${esc(s.eventSession)}">已选择的会话</option>`:''}${sessions.map(([key,hint])=>`<option value="${esc(key)}" ${s.eventSession===key?'selected':''}>${esc(time(hint.at)+' · '+hint.text)}</option>`).join('')}</select></label></div>`;}
-    function resetEventFilters(){eventGeneration++;s.eventWindow=null;s.eventCursors={};s.eventCursor='';s.events=[];s.eventLoading=false;return loadEvents();}
+    function resetEventFilters(){eventGeneration++;eventFailures.clear();eventCoverageByDevice.clear();s.eventCoverage=null;s.eventWindow=null;s.eventCursors={};s.eventCursor='';s.events=[];s.eventLoading=false;return loadEvents();}
     function recentTimeline(d){const events=(d.recentEvents||[]).filter(businessEvent);return events.length?timeline(events,true):(d.recentEvents||[]).some(e=>e.type==='voice.playback_state')?empty('尚未收到对话或观察内容','播放阶段记录可在互动记录中查看。',true):emptyInteractions(d);}
-    function eventTimeline() {return !s.events.length?emptyInteractions(selected(),s.eventCoverage):timeline(s.events);}
+    function eventTimeline() {
+      if(s.events.length)return timeline(s.events);
+      if(eventFailures.size)return '';
+      if(s.eventCoverage?.filteredOut)return empty('没有匹配的互动记录','可以更换筛选条件，或查看全部类型和会话。',true);
+      return emptyInteractions(selected(),s.eventCoverage);
+    }
+    function eventResults() {
+      const names=s.devices.filter(d=>eventFailures.has(id(d))).map(d=>d.name||'未命名设备');
+      const failure=names.length?`<div class="ew-event-failure"><p role="status">互动记录读取失败：${names.map(esc).join('、')}</p><button class="ew-button ew-button-quiet" data-action="retry-events" ${s.eventLoading?'disabled':''}>${s.eventLoading?'正在读取…':'重试失败设备'}</button></div>`:'';
+      const content=s.eventLoading&&!s.events.length&&!names.length?loading('正在读取互动记录…'):eventTimeline();
+      const more=s.eventCursor?`<button class="ew-button ew-button-quiet" data-action="more-events" ${s.eventLoading?'disabled':''}>加载更早记录</button>`:'';
+      return failure+content+more;
+    }
     function interactions() {
-      return `<div class="ew-records-top"><div><h2>每一次互动，都有迹可循</h2><p class="ew-muted">仅呈现业务事件中的文本记录。</p></div><label class="ew-select-label">设备<select name="eventsDevice"><option value="">全部设备</option>${s.devices.map(d=>`<option value="${esc(id(d))}" ${id(d)===s.deviceId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></label></div>${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-records">${s.eventLoading?loading('正在整理互动记录…'):eventTimeline()}${s.eventCursor?'<button class="ew-button ew-button-quiet" data-action="more-events">加载更早记录</button>':''}</section>`;
+      return `<div class="ew-records-top"><div><h2>每一次互动，都有迹可循</h2><p class="ew-muted">仅呈现业务事件中的文本记录。</p></div><label class="ew-select-label">设备<select name="eventsDevice"><option value="">全部设备</option>${s.devices.map(d=>`<option value="${esc(id(d))}" ${id(d)===s.deviceId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></label></div>${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-records">${eventResults()}</section>`;
     }
     function modelName(m) {return `${m.name||m.packageId||'未命名模型'}${m.version?' · '+m.version:''}`;}
     function dataLocation(location) {
@@ -198,20 +229,28 @@
     }
     function taskModels(t) {
       const active=s.modelTaskId===String(t.id);
-      return `<section class="ew-drawer-section"><div class="ew-section-heading"><h3>${esc(t.name)}</h3><span class="ew-task-kind">${esc(taskKind(t.kind))}</span></div><p class="ew-runtime-fact">${esc(taskRuntime(t))}${t.runtimeObservedAt?'<small>观测 '+esc(time(t.runtimeObservedAt))+'</small>':''}</p><h4>当前模型</h4>${t.models?.length?t.models.map(m=>`<div class="ew-model-line">${icon('library')}<span><strong>${esc(modelName(m))}</strong><small>${esc(modelPurpose(m.slot))} · ${esc(stateLabel(m.state||'unknown'))}</small>${m.observedAt&&time(m.observedAt)!=='尚无记录'?`<small>上次确认 ${esc(time(m.observedAt))}</small>`:''}</span></div>`).join(''):'<p class="ew-muted">任务尚未声明模型。</p>'}${voiceTest(t)}${t.models?.length?`<button class="ew-button ew-button-quiet" data-action="models" data-id="${esc(t.id)}" ${s.modelBusy?'disabled':''}>选择兼容模型 ${icon('arrow')}</button>`:''}${active&&s.models?`<div class="ew-model-picker"><h4>兼容的已发布模型</h4>${!s.models.canReplaceModel?`<p class="ew-muted">${esc(({task_not_configured_for_replacement:'此任务尚未配置模型更换能力。',no_compatible_packages_or_target_unavailable:'暂时没有兼容模型，或目标任务暂不可用。'})[s.models.reason]||s.models.reason||'此任务暂不支持更换模型。')}</p>`:items(s.models).length?items(s.models).map(m=>`<button class="ew-package" data-action="preview-model" data-id="${esc(m.id)}" data-slot="${esc(m.slot||t.models?.[0]?.slot||'default')}" ${s.modelBusy?'disabled':''}><span>${icon('library')}<strong>${esc(modelName(m))}</strong><small>${m.requiresRestart?'切换时任务将短暂重启':'按任务兼容策略切换'}</small></span>${icon('arrow')}</button>`).join(''):'<p class="ew-muted">暂时没有可用的兼容模型。</p>'}</div>`:''}<h4>登记的数据位置</h4>${t.dataLocations?.length?t.dataLocations.map(dataLocation).join(''):'<p class="ew-muted">任务尚未登记数据位置。</p>'}</section>`;
+      const operation=operationFor(t);
+      const operationBusy=operation && !operationFinished(operation.status);
+      return `<section class="ew-drawer-section"><div class="ew-section-heading"><h3>${esc(t.name)}</h3><span class="ew-task-kind">${esc(taskKind(t.kind))}</span></div><p class="ew-runtime-fact">${esc(taskRuntime(t))}${t.runtimeObservedAt?'<small>观测 '+esc(time(t.runtimeObservedAt))+'</small>':''}</p><h4>当前模型</h4>${t.models?.length?t.models.map(m=>`<div class="ew-model-line">${icon('library')}<span><strong>${esc(modelName(m))}</strong><small>${esc(modelPurpose(m.slot))} · ${esc(stateLabel(m.state||'unknown'))}</small>${m.observedAt&&time(m.observedAt)!=='尚无记录'?`<small>上次确认 ${esc(time(m.observedAt))}</small>`:''}</span></div>`).join(''):'<p class="ew-muted">任务尚未声明模型。</p>'}${voiceTest(t)}${t.models?.length?`<button class="ew-button ew-button-quiet" data-action="models" data-id="${esc(t.id)}" ${s.modelBusy||operationBusy?'disabled':''}>选择兼容模型 ${icon('arrow')}</button>`:''}${active&&s.models?`<div class="ew-model-picker"><h4>兼容的已发布模型</h4>${!s.models.canReplaceModel?`<p class="ew-muted">${esc(({task_not_configured_for_replacement:'此任务尚未配置模型更换能力。',no_compatible_packages_or_target_unavailable:'暂时没有兼容模型，或目标任务暂不可用。'})[s.models.reason]||s.models.reason||'此任务暂不支持更换模型。')}</p>`:items(s.models).length?items(s.models).map(m=>`<button class="ew-package" data-action="preview-model" data-id="${esc(m.id)}" data-slot="${esc(m.slot||t.models?.[0]?.slot||'default')}" ${s.modelBusy?'disabled':''}><span>${icon('library')}<strong>${esc(modelName(m))}</strong><small>${m.requiresRestart?'切换时任务将短暂重启':'按任务兼容策略切换'}</small></span>${icon('arrow')}</button>`).join(''):'<p class="ew-muted">暂时没有可用的兼容模型。</p>'}</div>`:''}${active&&s.preview?previewPanel():''}${operation?operationPanel(operation):''}<h4>登记的数据位置</h4>${t.dataLocations?.length?t.dataLocations.map(dataLocation).join(''):'<p class="ew-muted">任务尚未登记数据位置。</p>'}</section>`;
     }
     function summaryResult() {
       const r=s.summary;if(!r)return '';
+      const scope = s.summaryWindow ? `<p class="ew-summary-scope">本次小结 · ${esc(time(s.summaryWindow.from))} — ${esc(time(s.summaryWindow.to))}</p>` : '';
       if(['pending','queued','running','processing'].includes(r.status))return loading('DeepSeek 正在阅读这个时间段的互动…');
       if(r.status==='no_data')return `<div class="ew-summary-result"><h4>这个时间段还没有可整理的互动</h4><p>连接业务事件来源后，记录会出现在这里。可以换个时间范围再看看。</p>${coverage(r.coverage)}</div>`;
       if(r.status==='failed')return `<div class="ew-summary-result"><h4>这次小结未能完成</h4><p>${esc(r.message||({provider_not_configured:'管理员尚未配置 DeepSeek 服务。',provider_authentication_failed:'DeepSeek 服务认证未通过，请联系管理员检查配置。',provider_timeout:'DeepSeek 响应超时，请稍后重试。',provider_rate_limited:'DeepSeek 当前请求较多，请稍后重试。',provider_invalid_evidence:'这次小结没有通过事件依据校验，请重新生成。',provider_unavailable:'DeepSeek 暂时无法连接，请稍后重试。',provider_output_truncated:'这次生成的内容达到长度上限，请缩小时间范围后重试。',provider_invalid_response:'这次小结的格式无效，请重新生成。',insufficient_evidence:'这个时间段没有足够的互动记录。'})[r.errorCode]||r.errorCode||'请稍后重试。')}</p></div>`;
-      return `<div class="ew-summary-result"><div class="ew-summary-result-label">${icon('spark')} DEEPSEEK · 互动小结</div><h4>${esc(r.title||'这段时间，发生了这些事')}</h4>${r.summary?`<p>${esc(r.summary)}</p>`:''}${r.answer&&s.summaryQuestion?`<div class="ew-answer"><strong>关于你的问题</strong><p>${esc(r.answer)}</p></div>`:''}${r.topics?.length?`<ul>${r.topics.map(t=>`<li>${esc(typeof t==='string'?t:t.text)}${t.eventRefs?.length?` <button class="ew-evidence-link" data-action="evidence" data-refs="${esc(t.eventRefs.join(','))}">查看依据</button>`:''}</li>`).join('')}</ul>`:''}${r.uncertainties?.length?`<p class="ew-coverage">${icon('info')}${esc(Array.isArray(r.uncertainties)?r.uncertainties.join('；'):r.uncertainties)}</p>`:''}${coverage(r.coverage)}${r.evidence?.length?`<details class="ew-evidence"><summary>查看 ${r.evidence.length} 条事件依据</summary>${r.evidence.map(e=>`<blockquote id="ew-evidence-${esc(e.ref)}"><p>${esc(e.text)}</p><small>${esc(e.ref)} · ${esc(time(e.occurredAt))}</small></blockquote>`).join('')}</details>`:''}</div>`;
+      return `<div class="ew-summary-result"><div class="ew-summary-result-label">${icon('spark')} DEEPSEEK · 互动小结</div><h4>${esc(r.title||'这段时间，发生了这些事')}</h4>${scope}${r.summary?`<p>${esc(r.summary)}</p>`:''}${r.answer&&s.summaryQuestion?`<div class="ew-answer"><strong>关于你的问题</strong><p>${esc(r.answer)}</p></div>`:''}${r.topics?.length?`<ul>${r.topics.map(t=>`<li>${esc(typeof t==='string'?t:t.text)}${t.eventRefs?.length?` <button class="ew-evidence-link" data-action="evidence" data-refs="${esc(JSON.stringify(t.eventRefs))}">查看依据</button>`:''}</li>`).join('')}</ul>`:''}${r.uncertainties?.length?`<p class="ew-coverage">${icon('info')}${esc(Array.isArray(r.uncertainties)?r.uncertainties.join('；'):r.uncertainties)}</p>`:''}${coverage(r.coverage)}<p class="ew-evidence-message" role="status" hidden></p>${r.evidence?.length?`<details class="ew-evidence"><summary>查看 ${r.evidence.length} 条事件依据</summary>${r.evidence.map(e=>`<blockquote id="ew-evidence-${esc(e.ref)}" data-ref="${esc(e.ref)}" tabindex="-1"><p>${esc(e.text)}</p><small>${esc(e.ref)} · ${esc(time(e.occurredAt))}</small></blockquote>`).join('')}</details>`:''}</div>`;
     }
-    function summaryPanel() {return `<section class="ew-summary-panel"><div class="ew-section-heading"><h3>${icon('spark')} 为这台设备写一份小结</h3><span>DeepSeek</span></div><p>只在你点击后，整理所选时间内的业务互动文本。</p><div class="ew-summary-form"><label>时间范围<select name="period">${[['24','最近 24 小时'],['168','最近 7 天']].map(([v,l])=>`<option value="${v}" ${s.period===v?'selected':''}>${l}</option>`).join('')}</select></label><label>想了解什么 <span>选填</span><textarea name="question" rows="2" maxlength="2000" placeholder="例如：今天大家最关心什么？">${esc(s.question)}</textarea></label><button class="ew-button" data-action="summarize" ${s.summaryBusy?'disabled':''}>${icon('spark')}${s.summaryBusy?'正在生成…':s.question?'提问并生成小结':'生成互动小结'}</button></div>${summaryResult()}</section>`;}
+    function summaryPanel() {
+      const copy=window.EdgeStackDemo
+        ? '用演示记录生成小结，结果仅在本地模拟。'
+        : '提交后会将这台设备在所选时间内的授权对话、观察文字和你填写的问题发送给 DeepSeek。';
+      return `<section class="ew-summary-panel"><div class="ew-section-heading"><h3>${icon('spark')} 生成设备互动小结</h3></div><p>${copy} 时间线筛选单独生效，播放状态不计入小结。</p><div class="ew-summary-form"><label>小结时间范围<select name="period" ${s.summaryBusy?'disabled':''}>${summaryPeriods.map(([v,l])=>`<option value="${v}" ${s.period===v?'selected':''}>${l}</option>`).join('')}</select></label><label>想了解什么 <span>选填</span><textarea name="question" rows="2" maxlength="2000" placeholder="例如：今天大家最关心什么？">${esc(s.question)}</textarea></label>${s.summaryError?`<p class="ew-summary-error" role="alert">${esc(s.summaryError)}</p>`:''}<button class="ew-button" data-action="summarize" ${s.summaryBusy?'disabled':''}>${icon('spark')}${s.summaryBusy?'正在生成…':'生成互动小结'}</button></div>${summaryResult()}</section>`;
+    }
     function drawer() {
       if(!s.deviceId||s.view==='interactions')return '';
       const d=selected();
-      return `<div class="ew-drawer-backdrop" data-action="close-drawer"></div><aside class="ew-drawer" role="dialog" aria-modal="true" aria-label="${esc(d?.name||'设备详情')}" tabindex="-1"><header class="ew-drawer-header"><div class="ew-drawer-device-art"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot(!d?.online)}</svg></div><div><p class="ew-eyebrow">A LITTLE WORLD</p><h2>${esc(d?.name||'正在读取设备')}</h2><p><span class="ew-status ${d?.online?'':'ew-status-off'}">${d?.online?'管理连接在线':'管理连接离线'}</span> <span class="ew-muted">${taskList(d).length} 项业务任务</span></p></div><button class="ew-icon-button ew-drawer-close" data-action="close-drawer" aria-label="关闭设备详情">${icon('close')}</button></header><nav class="ew-drawer-tabs" aria-label="设备内容">${[['overview','概览'],['interactions','互动记录'],['models','模型与数据']].map(([key,label])=>`<button data-action="tab" data-value="${key}" aria-current="${s.tab===key?'page':'false'}">${label}</button>`).join('')}</nav><div class="ew-drawer-body" data-scroll-key="${esc(s.deviceId+':'+s.tab)}">${error()}${s.drawerLoading?loading('正在读取设备的小世界…'):!d?empty('没有找到这台设备','它可能已被移除，或当前账号没有访问权限。',true):s.tab==='overview'?`<div class="ew-device-note"><i class="ew-status-dot ${d.online?'':'ew-dot-muted'}"></i><span>${d.online?'管理连接在线，业务状态请查看任务记录':'管理连接离线，业务状态待确认'}<small>最近联系 ${esc(time(d.lastSeenAt))}</small></span></div><section class="ew-drawer-section"><h3>设备任务 <span>${taskList(d).length}</span></h3>${taskList(d).length?taskList(d).map(t=>`<button class="ew-drawer-task" data-action="task-tab" data-id="${esc(t.id)}"><span class="ew-task-art">${icon(/voice|speech/.test(t.kind)?'audio':/camera|vision/.test(t.kind)?'camera':'tasks')}</span><span><strong>${esc(t.name)}</strong><small>${esc(taskRuntime(t))} · ${(t.models||[]).length} 个模型</small><small>登记状态：${esc(stateLabel(t.state))}${t.runtimeObservedAt?' · 观测 '+esc(time(t.runtimeObservedAt)):''}</small></span>${icon('arrow')}</button>${voiceTest(t)}`).join(''):empty('暂无业务任务','设备在线接入后，已识别的业务应用会在这里出现。',true)}</section>${drawerSources(d)}<section class="ew-drawer-section"><div class="ew-section-heading"><h3>最近互动</h3><button class="ew-text-button" data-action="tab" data-value="interactions">全部 ${icon('arrow')}</button></div>${recentTimeline(d)}</section>`:s.tab==='interactions'?`${summaryPanel()}${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-drawer-section"><h3>互动时间线</h3>${s.eventLoading?loading('正在读取互动记录…'):eventTimeline()}${s.eventCursor?'<button class="ew-button ew-button-quiet" data-action="more-events">加载更早记录</button>':''}</section>`:drawerModels(d)}${s.preview?previewPanel():''}${s.operation?operationPanel():''}</div></aside>`;
+      return `<div class="ew-drawer-backdrop" data-action="close-drawer"></div><aside class="ew-drawer" role="dialog" aria-modal="true" aria-label="${esc(d?.name||'设备详情')}" tabindex="-1"><header class="ew-drawer-header"><div class="ew-drawer-device-art"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot(!d?.online)}</svg></div><div><p class="ew-eyebrow">A LITTLE WORLD</p><h2>${esc(d?.name||'正在读取设备')}</h2><p><span class="ew-status ${d?.online?'':'ew-status-off'}">${d?.online?'管理连接在线':'管理连接离线'}</span> <span class="ew-muted">${taskList(d).length} 项业务任务</span></p></div><button class="ew-icon-button ew-drawer-close" data-action="close-drawer" aria-label="关闭设备详情">${icon('close')}</button></header><nav class="ew-drawer-tabs" aria-label="设备内容">${[['overview','概览'],['interactions','互动记录'],['models','模型与数据']].map(([key,label])=>`<button data-action="tab" data-value="${key}" aria-current="${s.tab===key?'page':'false'}">${label}</button>`).join('')}</nav><div class="ew-drawer-body" data-scroll-key="${esc(s.deviceId+':'+s.tab)}">${error()}${s.drawerLoading?loading('正在读取设备的小世界…'):!d?empty('没有找到这台设备','它可能已被移除，或当前账号没有访问权限。',true):s.tab==='overview'?`<div class="ew-device-note"><i class="ew-status-dot ${d.online?'':'ew-dot-muted'}"></i><span>${d.online?'管理连接在线，业务状态请查看任务记录':'管理连接离线，业务状态待确认'}<small>最近联系 ${esc(time(d.lastSeenAt))}</small></span></div><section class="ew-drawer-section"><h3>设备任务 <span>${taskList(d).length}</span></h3>${taskList(d).length?taskList(d).map(t=>`<button class="ew-drawer-task" data-action="task-tab" data-id="${esc(t.id)}"><span class="ew-task-art">${icon(/voice|speech/.test(t.kind)?'audio':/camera|vision/.test(t.kind)?'camera':'tasks')}</span><span><strong>${esc(t.name)}</strong><small>${esc(taskRuntime(t))} · ${(t.models||[]).length} 个模型</small><small>登记状态：${esc(stateLabel(t.state))}${t.runtimeObservedAt?' · 观测 '+esc(time(t.runtimeObservedAt)):''}</small></span>${icon('arrow')}</button>${voiceTest(t)}`).join(''):empty('暂无业务任务','设备在线接入后，已识别的业务应用会在这里出现。',true)}</section>${drawerSources(d)}<section class="ew-drawer-section"><div class="ew-section-heading"><h3>最近互动</h3><button class="ew-text-button" data-action="tab" data-value="interactions">全部 ${icon('arrow')}</button></div>${recentTimeline(d)}</section>`:s.tab==='interactions'?`${summaryPanel()}${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-drawer-section"><h3>互动时间线</h3>${eventResults()}</section>`:drawerModels(d)}</div></aside>`;
     }
     function previousModelName(record){const task=taskList(selected()).find(t=>String(t.id)===String(record.taskId||s.modelTaskId)),binding=task?.models?.find(m=>m.slot===record.slot&&m.packageId===record.previousPackageId);return binding?modelName(binding):items(s.models).find(m=>m.id===record.previousPackageId)?.name||record.previousPackageId;}
     function modelEffect(value){const text=typeof value==='string'?value:value.text||value.description;return ({
@@ -219,8 +258,8 @@
       'Restart the task; retain all volumes, ports, networks, and unrelated environment values':'重启任务；保留全部数据卷、端口、网络及其他环境参数。',
       'Wait for a trusted runtime receipt before marking the model loaded':'收到可信的运行时回执后，才将模型标记为已加载。',
     })[text]||text;}
-    function previewPanel() {const p=s.preview;return `<div class="ew-model-confirm" role="region" aria-label="模型替换预览"><span class="ew-summary-result-label">变更预览</span><h3>确认后，再交给设备</h3><dl><dt>目标任务</dt><dd>${esc(taskList(selected()).find(t=>String(t.id)===s.modelTaskId)?.name||p.taskId)}</dd>${p.previousPackageId?`<dt>变更前模型</dt><dd>${esc(s.previousModelLabel||previousModelName(p))}<small class="ew-package-id">${esc(p.previousPackageId)}</small></dd>`:''}<dt>新模型</dt><dd>${esc(p.packageName||items(s.models).find(m=>m.id===p.packageId)?.name||p.packageId)}</dd><dt>任务影响</dt><dd>${p.requiresRestart?'任务会短暂重启':'按任务声明的兼容策略应用'}</dd></dl>${p.effects?.length?`<ul>${p.effects.map(e=>`<li>${esc(modelEffect(e))}</li>`).join('')}</ul>`:''}<p class="ew-muted">只更新已声明的模型位置。任务配置在提交时再次校验。</p><div class="ew-inline-actions"><button class="ew-button ew-button-quiet" data-action="cancel-preview" ${s.modelBusy?'disabled':''}>取消</button><button class="ew-button" data-action="confirm-model" ${s.modelBusy?'disabled':''}>${s.modelBusy?'正在提交…':'确认替换模型'}</button></div></div>`;}
-    function operationPanel() {const o=s.operation,success=['succeeded','completed','applied'].includes(o.status),stage=success?3:o.status==='awaiting_observation'?2:1;return `<div class="ew-operation" role="status">${icon(success?'check':'info')}<span><strong>${esc(stateLabel(o.status))}</strong><small>${esc(o.message||(success?'模型已按设备报告更新。':o.status==='failed'?'变更没有完成，请重新检查任务状态。':'变更已提交，等待设备报告结果。'))}</small>${o.previousPackageId?`<small>变更前模型：${esc(s.previousModelLabel||o.previousPackageId)} · ${esc(o.previousPackageId)}</small>`:''}<ol class="ew-operation-stages" aria-label="模型更新阶段">${['提交方案','等待设备确认','确认模型状态'].map((label,i)=>`<li class="${o.status==='failed'?'ew-stage-failed':i+1<stage||success?'ew-stage-done':i+1===stage?'ew-stage-current':''}"><i></i>${label}</li>`).join('')}</ol></span></div>`;}
+    function previewPanel() {const p=s.preview;return `<div class="ew-model-confirm" role="region" aria-label="模型替换预览" tabindex="-1"><span class="ew-summary-result-label">变更预览</span><h3>确认后，再交给设备</h3><dl><dt>目标任务</dt><dd>${esc(taskList(selected()).find(t=>String(t.id)===s.modelTaskId)?.name||p.taskId)}</dd>${p.previousPackageId?`<dt>变更前模型</dt><dd>${esc(s.previousModelLabel||previousModelName(p))}<small class="ew-package-id">${esc(p.previousPackageId)}</small></dd>`:''}<dt>新模型</dt><dd>${esc(p.packageName||items(s.models).find(m=>m.id===p.packageId)?.name||p.packageId)}</dd><dt>任务影响</dt><dd>${p.requiresRestart?'任务会短暂重启':'按任务声明的兼容策略应用'}</dd></dl>${p.effects?.length?`<ul>${p.effects.map(e=>`<li>${esc(modelEffect(e))}</li>`).join('')}</ul>`:''}<p class="ew-muted">只更新已声明的模型位置。任务配置在提交时再次校验。</p><div class="ew-inline-actions"><button class="ew-button ew-button-quiet" data-action="cancel-preview" ${s.modelBusy?'disabled':''}>取消</button><button class="ew-button" data-action="confirm-model" ${s.modelBusy?'disabled':''}>${s.modelBusy?'正在提交…':'确认替换模型'}</button></div></div>`;}
+    function operationPanel(o) {if(o.checking)return `<div class="ew-operation" role="status">${icon('info')}<span>正在读取模型更新进度…</span></div>`;if(o.checkFailed)return `<div class="ew-operation" role="status">${icon('info')}<span><strong>暂时无法读取模型更新进度</strong><small>连接恢复后会自动重试。</small></span></div>`;const success=['succeeded','completed','applied'].includes(o.status),stage=success?3:o.status==='awaiting_observation'?2:1;return `<div class="ew-operation" role="status">${icon(success?'check':'info')}<span><strong>${esc(stateLabel(o.status))}</strong><small>${esc(o.message||(success?'模型已按设备报告更新。':operationFinished(o.status)?'变更未确认完成，请检查任务当前状态。':'变更已提交，等待设备报告结果。'))}</small>${o.previousPackageId?`<small>变更前模型：${esc(o.previousLabel?o.previousLabel+' · '+o.previousPackageId:o.previousPackageId)}</small>`:''}<ol class="ew-operation-stages" aria-label="模型更新阶段">${['提交方案','等待设备确认','确认模型状态'].map((label,i)=>`<li class="${o.status==='failed'?'ew-stage-failed':i+1<stage||success?'ew-stage-done':i+1===stage?'ew-stage-current':''}"><i></i>${label}</li>`).join('')}</ol></span></div>`;}
     function saveView(){
       const scene=root.querySelector('.ew-scene-scroll');if(scene)remembered.scene={x:scene.scrollLeft,y:scene.scrollTop};
       const drawer=root.querySelector('.ew-drawer-body');if(drawer)remembered.drawer[drawer.dataset.scrollKey]=drawer.scrollTop;
@@ -235,62 +274,194 @@
       root.querySelectorAll('[data-device-activity]').forEach(layer=>{const a=activity.active.get(layer.dataset.deviceActivity);if(!a){layer.replaceChildren();return;}if(layer.firstElementChild?.dataset.eventId===a.eventId)return;const node=document.createElementNS('http://www.w3.org/2000/svg','g');node.dataset.eventId=a.eventId;node.classList.add('ew-live-event',a.kind==='camera'?'ew-live-camera':'ew-live-voice');node.style.setProperty('--ew-activity-elapsed',`-${at-a.started}ms`);node.setAttribute('role','status');node.setAttribute('aria-label',a.label+'：'+a.text);node.innerHTML=`<path class="ew-sync-path" d="M65 32Q20 33-22 0"/><circle class="ew-sync-light" cx="65" cy="32" r="6"/><g class="ew-event-bubble"><rect x="-96" y="-140" width="192" height="42" rx="10"/><path d="m-9-98 8 8 8-8"/><text x="-84" y="-124" class="ew-event-bubble-label">${esc(a.label)}</text><text x="-84" y="-110" class="ew-event-bubble-text">${esc(a.text.length>21?a.text.slice(0,20)+'…':a.text)}</text></g>`;layer.replaceChildren(node);});
       for(const [deviceId,a] of activity.active){const key=deviceId+':'+a.eventId;if(!expiryScheduled.has(key)){expiryScheduled.add(key);schedule(()=>{expiryScheduled.delete(key);if(activity.active.get(deviceId)?.eventId===a.eventId){activity.active.delete(deviceId);syncActivities();}},Math.max(1,a.expires-at));}}
     }
-    async function readEventPages(devices,limit=100,recent=false,more=false){
-      const filters={type:eventTypeGroups[s.eventType],session:s.eventSession,window:s.eventWindow};const responses=[];for(let offset=0;offset<devices.length;offset+=4){const batch=devices.slice(offset,offset+4);const settled=await Promise.allSettled(batch.map(d=>{const q=new URLSearchParams({deviceId:id(d),limit:String(limit)});if(recent){const at=Date.now();q.set('from',new Date(at-90000).toISOString());q.set('to',new Date(at+5000).toISOString());}else{if(filters.window){q.set('from',filters.window.from);q.set('to',filters.window.to);}if(filters.type)q.set('type',filters.type);if(filters.session)q.set('sessionId',filters.session);}if(more&&s.eventCursors[id(d)])q.set('cursor',s.eventCursors[id(d)]);return api('GET','events?'+q);}));settled.forEach((r,i)=>responses.push({device:batch[i],result:r}));}return responses;
+    async function readEventPages(devices,limit=100,recent=false,cursors={}){
+      const filters={type:eventTypeGroups[s.eventType],session:s.eventSession,window:s.eventWindow};const responses=[];for(let offset=0;offset<devices.length;offset+=4){const batch=devices.slice(offset,offset+4);const settled=await Promise.allSettled(batch.map(d=>{const q=new URLSearchParams({deviceId:id(d),limit:String(limit)});if(recent){const at=Date.now();q.set('from',new Date(at-90000).toISOString());q.set('to',new Date(at+5000).toISOString());}else{if(filters.window){q.set('from',filters.window.from);q.set('to',filters.window.to);}if(filters.type)q.set('type',filters.type);if(filters.session)q.set('sessionId',filters.session);}if(cursors[id(d)])q.set('cursor',cursors[id(d)]);return api('GET','events?'+q);}));settled.forEach((r,i)=>responses.push({device:batch[i],result:r}));}return responses;
     }
     async function pollEvents(){
       if(polling||!alive||s.loading)return polling;polling=(async()=>{try{const pages=await readEventPages(s.devices,100,true);if(!alive)return;let changed=false;for(const page of pages){if(page.result.status!=='fulfilled')continue;const did=id(page.device),wasBaseline=baselineDevices.has(did);for(const event of items(page.result.value)){const key=event.eventId||event.id;if(!key||activity.seen.has(key))continue;activity.seen.add(key);activity.seenAt.set(key,Date.now());if(!wasBaseline)continue;const d=s.devices.find(d=>id(d)===String(event.deviceId));if(!d)continue;d.recentEvents=[event,...(d.recentEvents||[]).filter(e=>(e.eventId||e.id)!==key)].sort((a,b)=>new Date(b.occurredAt)-new Date(a.occurredAt)).slice(0,10);rememberSessions([event]);if((s.view==='interactions'||s.tab==='interactions')&&(!s.deviceId||s.deviceId===String(event.deviceId))&&eventMatches(event))s.events=[event,...s.events.filter(e=>(e.eventId||e.id)!==key)].sort((a,b)=>new Date(b.occurredAt)-new Date(a.occurredAt));changed=true;const at=Date.now(),occurred=Date.parse(event.occurredAt),received=Date.parse(event.receivedAt);if(/^(voice|camera)\./.test(event.type)&&Number.isFinite(occurred)&&Number.isFinite(received)&&at-occurred>=-5000&&at-occurred<45000&&at-received>=-5000&&at-received<45000)activity.active.set(String(event.deviceId),{eventId:key,started:at,expires:at+6500,label:liveLabel(event),text:eventText(event),kind:event.type.startsWith('camera')?'camera':'voice'});}baselineDevices.add(did);}
       eventBaseline=true;for(const [key,at] of activity.seenAt)if(Date.now()-at>120000){activity.seen.delete(key);activity.seenAt.delete(key);}if(changed)render();syncActivities();}catch{/* Keep existing evidence during a background read failure. */}})();try{await polling;}finally{polling=null;}
     }
     async function pollLoop(){await pollEvents();if(alive)schedule(pollLoop,5000);}
+    function showEvidence(moveFocus=false, restoreOpen=false) {
+      const details=root.querySelector('.ew-evidence');
+      const message=root.querySelector('.ew-evidence-message');
+      const quotes=new Map();
+      for(const quote of details?.querySelectorAll('[data-ref]')||[]){
+        quotes.set(quote.dataset.ref,quote);
+        quote.classList.toggle('ew-evidence-highlight',activeEvidence.includes(quote.dataset.ref));
+      }
+      const first=activeEvidence.map(ref=>quotes.get(ref)).find(Boolean);
+      if(message){
+        message.textContent='部分引用的原文暂不可用。';
+        message.hidden=activeEvidence.every(ref=>quotes.has(ref));
+      }
+      if(first){
+        if(moveFocus||restoreOpen)details.open=true;
+        if(moveFocus)first.focus();
+      }
+    }
     function render() {
       if(!alive)return;
       saveView();
       if(!root.querySelector('[data-ew-part]'))root.innerHTML='<div data-ew-part="header"></div><div data-ew-part="content"></div><div data-ew-part="footer"></div><div data-ew-part="drawer"></div>';
-      const focused=document.activeElement;const focusName=root.contains(focused)?focused?.name:null;const selection=focusName&&typeof focused.selectionStart==='number'?focused.selectionStart:null;
+      const evidenceWasOpen=root.querySelector('.ew-evidence')?.open;
+      const focused=document.activeElement;const focusedRef=root.contains(focused)?focused.dataset?.ref:null;const focusName=root.contains(focused)?focused?.name:null;const selection=focusName&&typeof focused.selectionStart==='number'?focused.selectionStart:null;
       updatePart('header',header());updatePart('content',s.loading?loading():s.error&&!s.devices.length?empty('暂时还看不到这个空间','读取设备时遇到了问题。点击右上角刷新，再试一次。'):({space,tasks,interactions,library})[s.view]());
       updatePart('footer',`<footer class="ew-footer"><span>EdgeStack<span class="ew-brand-dot">.</span> <span class="ew-muted">让边缘设备成为日常的伙伴</span></span><span class="ew-build">${window.EdgeStackDemo?'离线演示 · 所有设备与互动均为模拟数据':'状态来自已授权设备与业务事件'}</span></footer>`);updatePart('drawer',drawer());
       const scene=root.querySelector('.ew-scene-scroll');if(scene){scene.scrollLeft=remembered.scene.x;scene.scrollTop=remembered.scene.y;}
       const drawerBody=root.querySelector('.ew-drawer-body');if(drawerBody)drawerBody.scrollTop=remembered.drawer[drawerBody.dataset.scrollKey]||0;
+      if(activeEvidence.length)showEvidence(false,evidenceWasOpen);
+      if(focusedRef&&document.activeElement!==focused){
+        [...root.querySelectorAll('.ew-evidence [data-ref]')].find(q=>q.dataset.ref===focusedRef)?.focus({preventScroll:true});
+      }
       syncActivities();
       document.body.classList.toggle('edgestack-drawer-open',!!s.deviceId&&s.view!=='interactions');
       if(focusName){const next=root.querySelector(`[name="${focusName}"]`);next?.focus({preventScroll:true});if(selection!==null&&next?.setSelectionRange)next.setSelectionRange(selection,selection);}
     }
-    async function refresh() {
-      const run=++sequence;s.error='';
-      try { const data=await api('GET','devices');if(!alive||run!==sequence)return;s.devices=items(data);for(const d of s.devices)if(!activity.slots.has(id(d)))activity.slots.set(id(d),activity.slots.size);if(!activity.columns&&s.devices.length>1)activity.columns=s.devices.length<=4?2:4;s.loading=false;render();if(s.deviceId&&s.view!=='interactions')await loadDevice();if(s.view==='interactions')await loadEvents();if(eventBaseline)await pollEvents(); }
-      catch(e){if(alive&&run===sequence){s.error=e.message;s.loading=false;render();}}
+    async function refresh(background=false) {
+      if (background && (refreshing || document.hidden)) return;
+      const run=++sequence;
+      refreshing=run;
+      if (!background) s.error='';
+      try {
+        const data=await api('GET','devices');
+        if(!alive||run!==sequence)return;
+        s.devices=items(data);
+        statusCheckedAt=new Date().toISOString();
+        statusStale=false;
+        for(const d of s.devices)if(!activity.slots.has(id(d)))activity.slots.set(id(d),activity.slots.size);
+        if(!activity.columns&&s.devices.length>1)activity.columns=s.devices.length<=4?2:4;
+        s.loading=false;
+        render();
+        if (!background) {
+          if(s.deviceId&&s.view!=='interactions')await loadDevice();
+          if(s.view==='interactions')await loadEvents();
+          if(eventBaseline)await pollEvents();
+        }
+      } catch(e) {
+        if(alive&&run===sequence){statusStale=true;if(!background)s.error=e.message;s.loading=false;render();}
+      } finally {
+        if (refreshing===run) refreshing=0;
+      }
+    }
+    async function refreshStatusLoop() {
+      await refresh(true);
+      if (alive) schedule(refreshStatusLoop,statusRefreshInterval);
     }
     async function loadDevice() {
       const current=s.deviceId;if(!current)return;s.drawerLoading=true;render();
       try {const results=await Promise.allSettled([api('GET','devices/'+encodeURIComponent(current)),api('GET','devices/'+encodeURIComponent(current)+'/event-sources')]);if(!alive||s.deviceId!==current)return;if(results[0].status==='rejected')throw results[0].reason;const d=results[0].value;const at=s.devices.findIndex(x=>id(x)===current);if(at<0)s.devices.push(d);else s.devices[at]=d;if(results[1].status==='fulfilled'){d.sources=items(results[1].value);s.sourceCoverage=results[1].value.coverage;}else{s.sourceCoverage={complete:false,message:'互动来源暂时无法读取，请稍后刷新。'};}}
       catch(e){s.error=e.message;}finally{if(alive&&s.deviceId===current){s.drawerLoading=false;render();if(s.tab==='interactions')loadEvents();}}
     }
-    async function loadEvents(more=false) {
-      if(s.eventLoading)return;const current=s.deviceId,generation=eventGeneration;if(!s.eventWindow){const at=Date.now();s.eventWindow={from:new Date(at-Number(s.eventPeriod)*3600000).toISOString(),to:new Date(at).toISOString()};}s.eventLoading=true;render();
-      try{const devices=s.devices.filter(d=>(!current||id(d)===current)&&(!more||s.eventCursors[id(d)]));const pages=await readEventPages(devices,30,false,more);if(!alive||s.deviceId!==current||generation!==eventGeneration)return;const successful=pages.filter(p=>p.result.status==='fulfilled');if(pages.length&&!successful.length)throw pages[0].result.reason;const records=successful.flatMap(p=>items(p.result.value));rememberSessions(records);s.events=(more?[...s.events,...records]:[...records,...s.events.filter(e=>eventMatches(e)&&Date.parse(e.occurredAt)>Date.parse(s.eventWindow.to))]).filter((e,i,a)=>a.findIndex(x=>(x.eventId||x.id)===(e.eventId||e.id))===i).sort((a,b)=>new Date(b.occurredAt)-new Date(a.occurredAt));if(!more)s.eventCursors={};successful.forEach(p=>s.eventCursors[id(p.device)]=p.result.value.nextCursor||'');s.eventCursor=Object.values(s.eventCursors).some(Boolean)?'more':'';const coverage=successful.map(p=>p.result.value.coverage).filter(Boolean);s.eventCoverage=coverage.length?{sourceCount:coverage.reduce((n,c)=>n+(c.sourceCount||0),0),availableSources:coverage.reduce((n,c)=>n+(c.availableSources||0),0),complete:successful.length===pages.length&&coverage.every(c=>c.complete!==false),gaps:[...new Set(coverage.flatMap(c=>c.gaps||[]))]}:{sourceCount:0,complete:false,gaps:['no_source_configured']};}
-      catch(e){if(generation===eventGeneration)s.error=e.message;}finally{if(alive&&generation===eventGeneration){s.eventLoading=false;render();}}
+    async function loadEvents(mode='first') {
+      if(s.eventLoading)return;
+      const current=s.deviceId,generation=eventGeneration;
+      if(!s.eventWindow){
+        const at=Date.now();
+        s.eventWindow={from:new Date(at-Number(s.eventPeriod)*3600000).toISOString(),to:new Date(at).toISOString()};
+      }
+      const windowEnd=Date.parse(s.eventWindow.to);
+      const devices=s.devices.filter(d=>{
+        const key=id(d);
+        if(current&&key!==current)return false;
+        if(mode==='retry')return eventFailures.has(key);
+        return mode==='first'||(s.eventCursors[key]&&!eventFailures.has(key));
+      });
+      const cursors=Object.fromEntries(devices.map(d=>{
+        const key=id(d);
+        return [key,mode==='retry'?eventFailures.get(key):mode==='more'?s.eventCursors[key]:''];
+      }));
+      s.eventLoading=true;
+      render();
+      try {
+        const pages=await readEventPages(devices,30,false,cursors);
+        if(!alive||s.deviceId!==current||generation!==eventGeneration)return;
+        const authorized=new Set(s.devices.map(id));
+        let retained=s.events.filter(e=>authorized.has(String(e.deviceId)));
+        const received=[];
+        if(mode==='first'){
+          for(const key of eventFailures.keys())if(!authorized.has(key))eventFailures.delete(key);
+          for(const key of eventCoverageByDevice.keys())if(!authorized.has(key))eventCoverageByDevice.delete(key);
+          for(const key of Object.keys(s.eventCursors))if(!authorized.has(key))delete s.eventCursors[key];
+        }
+        for(const {device,result} of pages){
+          const key=id(device);
+          if(!authorized.has(key))continue;
+          if(result.status==='rejected'){
+            eventFailures.set(key,cursors[key]);
+            continue;
+          }
+          eventFailures.delete(key);
+          if(mode==='first')retained=retained.filter(e=>String(e.deviceId)!==key||Date.parse(e.occurredAt)>windowEnd);
+          const data=result.value;
+          received.push(...items(data));
+          s.eventCursors[key]=data.nextCursor||'';
+          eventCoverageByDevice.set(key,data.coverage);
+        }
+        rememberSessions(received);
+        const byId=new Map([...retained,...received].map(e=>[e.eventId||e.id,e]));
+        s.events=[...byId.values()].sort((a,b)=>Date.parse(b.occurredAt)-Date.parse(a.occurredAt));
+        s.eventCursor=Object.entries(s.eventCursors).some(([key,cursor])=>cursor&&!eventFailures.has(key))?'more':'';
+        const reports=[...eventCoverageByDevice.values()].filter(Boolean);
+        s.eventCoverage=reports.length?{
+          sourceCount:reports.reduce((n,c)=>n+(c.sourceCount||0),0),
+          complete:reports.every(c=>c.complete!==false),
+          filteredOut:(s.eventType!=='all'||!!s.eventSession)&&reports.some(c=>c.eventCount>0),
+          gaps:[...new Set(reports.flatMap(c=>c.gaps||[]))],
+        }:null;
+      } finally {
+        if(alive&&generation===eventGeneration){s.eventLoading=false;render();}
+      }
     }
     async function pollSummary(summaryId) {
       try{const r=await api('GET','summaries/'+encodeURIComponent(summaryId));if(!alive)return;s.summary=r;s.summaryBusy=['queued','pending','running','processing'].includes(r.status);render();if(s.summaryBusy)schedule(()=>pollSummary(summaryId),1500);}
-      catch(e){if(alive){s.summaryBusy=false;s.error=e.message;render();}}
+      catch(e){if(alive){s.summaryBusy=false;s.summaryError=e.message;render();}}
     }
     async function summarize() {
-      if(s.summaryBusy)return;const question=s.question.trim();s.summaryQuestion=question;s.summaryBusy=true;s.summary=null;render();
-      try{const to=new Date();const from=new Date(to.getTime()-Number(s.period)*3600000);let timeZone='Asia/Shanghai';try{timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone||timeZone;}catch(_){}const r=await api('POST','summaries',{deviceId:s.deviceId,from:from.toISOString(),to:to.toISOString(),question,timeZone});if(!alive)return;s.summary=r;s.summaryBusy=['queued','pending','running','processing'].includes(r.status);if(s.summaryBusy)schedule(()=>pollSummary(r.id),1000);}
-      catch(e){s.error=e.message;s.summaryBusy=false;}finally{render();}
+      if(s.summaryBusy)return;const question=s.question.trim();s.summaryQuestion=question;s.summaryBusy=true;s.summary=null;s.summaryError='';activeEvidence=[];render();
+      try{const to=new Date();const from=new Date(to.getTime()-Number(s.period)*3600000);s.summaryWindow={from:from.toISOString(),to:to.toISOString()};let timeZone='Asia/Shanghai';try{timeZone=Intl.DateTimeFormat().resolvedOptions().timeZone||timeZone;}catch(_){}const r=await api('POST','summaries',{deviceId:s.deviceId,from:from.toISOString(),to:to.toISOString(),question,timeZone});if(!alive)return;s.summary=r;s.summaryBusy=['queued','pending','running','processing'].includes(r.status);if(s.summaryBusy)schedule(()=>pollSummary(r.id),1000);}
+      catch(e){s.summaryError=e.message;s.summaryBusy=false;}finally{render();}
     }
-    async function pollOperation(operationId) {
-      try{const r=await api('GET','operations/'+encodeURIComponent(operationId));if(!alive)return;s.operation=r;render();if(!['succeeded','completed','applied','failed','cancelled','rejected'].includes(r.status))schedule(()=>pollOperation(operationId),1800);else if(['succeeded','completed','applied'].includes(r.status))loadDevice();}
-      catch(e){if(alive){s.error=e.message;render();}}
+    async function pollOperation(taskId, operationId, refreshAfterCompletion=false) {
+      try {
+        const r=await api('GET','operations/'+encodeURIComponent(operationId));
+        if(!alive||operationIds[taskId]?.id!==operationId)return;
+        operations.set(taskId,{...r,previousLabel:operations.get(taskId)?.previousLabel});
+        render();
+        if(!operationFinished(r.status))schedule(()=>pollOperation(taskId,operationId,true),1800);
+        else if(refreshAfterCompletion)loadDevice();
+      } catch(e) {
+        if(!alive||operationIds[taskId]?.id!==operationId)return;
+        if(e.status===404||e.status===403){
+          delete operationIds[taskId];saveOperationIds();operations.delete(taskId);
+        }else{
+          operations.set(taskId,{status:'awaiting_observation',checkFailed:true});
+          schedule(()=>pollOperation(taskId,operationId,true),5000);
+        }
+        render();
+      }
     }
     async function modelAction(action,b) {
       if(s.modelBusy)return;s.modelBusy=true;s.error='';render();
       try{
         if(action==='models'){s.modelTaskId=b.dataset.id;s.models=await api('GET','tasks/'+encodeURIComponent(s.modelTaskId)+'/models');s.preview=null;}
         if(action==='preview-model'){const task=taskList(selected()).find(t=>String(t.id)===s.modelTaskId);s.preview=await api('POST','tasks/'+encodeURIComponent(s.modelTaskId)+'/model-change-preview',{packageId:b.dataset.id,slot:b.dataset.slot,revision:s.models.taskRevision||task?.revision});s.previousModelLabel=s.preview.previousPackageId?previousModelName(s.preview):'';}
-        if(action==='confirm-model'&&s.preview){s.operation=await api('POST','tasks/'+encodeURIComponent(s.modelTaskId)+'/model-changes',{previewId:s.preview.id,confirm:true});s.preview=null;s.models=null;schedule(()=>pollOperation(s.operation.id),1200);}
-      }catch(e){s.error=e.message;if(e.status===409){s.preview=null;s.models=null;}}finally{s.modelBusy=false;render();}
+        if(action==='confirm-model'&&s.preview){
+          const taskId=s.modelTaskId;
+          const operation=await api('POST','tasks/'+encodeURIComponent(taskId)+'/model-changes',{previewId:s.preview.id,confirm:true});
+          if(!alive)return;
+          operations.set(taskId,{...operation,previousLabel:s.previousModelLabel});
+          operationIds[taskId]={id:operation.id,deviceId:s.deviceId};
+          saveOperationIds();
+          s.preview=null;
+          s.models=null;
+          if (!operationFinished(operation.status)) schedule(()=>pollOperation(taskId,operation.id,true),1200);
+          else if (['succeeded','completed','applied'].includes(operation.status)) loadDevice();
+        }
+      }catch(e){s.error=e.message;if(e.status===409){s.preview=null;s.models=null;}}finally{
+        s.modelBusy=false;render();
+        if(action==='preview-model'&&s.preview)root.querySelector('.ew-model-confirm')?.focus();
+      }
     }
     async function click(event) {
       const b=event.target.closest('[data-action]');if(!b||!root.contains(b))return;const action=b.dataset.action;
@@ -307,11 +478,16 @@
       if(action==='task') {if(s.deviceId===b.dataset.device){s.tab='models';s.modelTaskId=b.dataset.id;}else{return go('library',b.dataset.device);}}
       if(action==='task-tab'){s.tab='models';s.modelTaskId=b.dataset.id;}
       if(action==='tab'){s.tab=b.dataset.value;if(s.tab==='interactions'){render();return loadEvents();}}
-      if(action==='more-events')return loadEvents(true);
+      if(action==='more-events')return loadEvents('more');
+      if(action==='retry-events')return loadEvents('retry');
       if(action==='summarize')return summarize();
       if(['models','preview-model','confirm-model'].includes(action))return modelAction(action,b);
       if(action==='cancel-preview')s.preview=null;
-      if(action==='evidence'){const details=root.querySelector('.ew-evidence');if(details){details.open=true;details.scrollIntoView({behavior:matchMedia('(prefers-reduced-motion: reduce)').matches?'auto':'smooth',block:'nearest'});}return;}
+      if(action==='evidence'){
+        activeEvidence=JSON.parse(b.dataset.refs);
+        showEvidence(true);
+        return;
+      }
       render();
     }
     function input(event) {if(event.target.name==='question')s.question=event.target.value;if(event.target.name==='search'){s.query=event.target.value;render();}}
@@ -323,7 +499,19 @@
     }
     root.addEventListener('click',click);root.addEventListener('input',input);root.addEventListener('change',change);document.addEventListener('keydown',keydown);
     if(s.view==='library'&&s.deviceId)s.tab='models';
-    render();refresh().then(()=>{if(s.deviceId&&s.view!=='interactions')root.querySelector('.ew-drawer-close')?.focus();pollLoop();});
+    render();
+    refresh().then(()=>{
+      if(!alive)return;
+      if(s.deviceId&&s.view!=='interactions'){
+        root.querySelector('.ew-drawer-close')?.focus();
+        for(const t of taskList(selected())){
+          const key=String(t.id),saved=operationIds[key];
+          if(saved?.deviceId===s.deviceId&&saved.id)pollOperation(key,saved.id,true);
+        }
+      }
+      pollLoop();
+      schedule(refreshStatusLoop,statusRefreshInterval);
+    });
     return ()=>{saveView();alive=false;sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
   }
   function nav() {
