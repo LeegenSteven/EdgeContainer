@@ -23,6 +23,7 @@
     tasks:'<rect x="4" y="4" width="16" height="16" rx="4"/><path d="m8 9 2 2 5-4M8 16h8"/>',
     interactions:'<path d="M21 11.5a8.4 8.4 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.4 8.4 0 0 1-3.8-.9L3 21l1.9-5.7a8.4 8.4 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.4 8.4 0 0 1 3.8-.9h.5a8.5 8.5 0 0 1 8 8v.5Z"/><path d="M8 10h8M8 14h5"/>',
     library:'<path d="m12 2 9 5v10l-9 5-9-5V7l9-5Zm0 10 9-5M3 7l9 5v10M7 4.8l9 5v5"/>',
+    menu:'<path d="M4 6h16M4 12h16M4 18h16"/>',
     arrow:'<path d="m8 5 7 7-7 7"/>', close:'<path d="m6 6 12 12M6 18 18 6"/>',
     refresh:'<path d="M20 7v5h-5M4 17v-5h5"/><path d="M6.1 7a7 7 0 0 1 11.6-2L20 8M4 16l2.3 3A7 7 0 0 0 18 17"/>',
     spark:'<path d="m12 3 2.5 6.5L21 12l-6.5 2.5L12 21l-2.5-6.5L3 12l6.5-2.5L12 3ZM20 2v4M18 4h4"/>',
@@ -167,8 +168,7 @@
     function space() {
       if(!s.devices.length)return empty('你的空间，等待第一位伙伴','请联系管理员接入设备并授予访问权限。接入后的设备会在这里拥有自己的工作台。');
       const devices=filteredDevices();
-      const allRecent=s.devices.flatMap(d=>(d.recentEvents||[]).map(e=>({...e,deviceId:id(d),deviceName:d.name})));const hasPlayback=allRecent.some(e=>e.type==='voice.playback_state');const recent=allRecent.filter(businessEvent).sort((a,b)=>new Date(b.occurredAt)-new Date(a.occurredAt)).slice(0,4);
-      return `<div class="ew-space-layout"><section class="ew-scene-panel"><div class="ew-scene-toolbar"><div class="ew-segment" aria-label="设备筛选">${[['all','全部'],['online','在线'],['offline','离线']].map(([key,label])=>`<button data-action="filter" data-value="${key}" aria-pressed="${s.filter===key}">${label}</button>`).join('')}</div><div class="ew-toolbar-right"><label class="ew-search">${icon('search')}<input name="search" placeholder="找一台设备" value="${esc(s.query)}" aria-label="查找设备"></label><button class="ew-icon-button" data-action="layout" aria-label="${s.layout==='space'?'切换列表视图':'切换空间视图'}" aria-pressed="${s.layout==='list'}">${icon(s.layout==='space'?'list':'space')}</button></div></div><div class="ew-scene-scroll">${!devices.length?empty('没有找到这台设备','试试其他名称或查看全部设备。',true):s.layout==='list'?`<div class="ew-device-list">${devices.map(d=>`<button data-action="device" data-id="${esc(id(d))}"><span class="ew-list-device">${icon('space')}</span><span><strong>${esc(d.name)}</strong><small>${taskList(d).length} 项任务 · 最近互动 ${time(d.lastInteractionAt)}</small></span><span class="ew-status ${d.online?'':'ew-status-off'}">${d.online?'管理连接在线':'管理连接离线'}</span>${icon('arrow')}</button>`).join('')}</div>`:scene(s.devices,{visible:new Set(devices.map(id)),slots:activity.slots,columns:activity.columns})}</div><div class="ew-scene-footer"><span><i class="ew-status-dot"></i>点击工作台，看看设备的小世界</span><span>${devices.length} 台设备 · ${s.layout==='space'?'空间视图':'列表视图'}</span></div></section><aside class="ew-activity"><div class="ew-section-heading"><h2>空间动态</h2><span class="ew-tiny-dot"></span></div><p class="ew-muted ew-small">来自你的设备，而不只是运行状态</p>${recent.length?timeline(recent,true):`<div class="ew-quiet"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot(true)}</svg><h3>${hasPlayback?'尚未收到对话或观察内容':'尚未收到互动记录'}</h3><p>${hasPlayback?'播放阶段记录可在互动记录中查看。':'接入设备的业务事件来源后，互动会出现在这里。'}</p></div>`}<button class="ew-text-button" data-action="view" data-value="interactions">查看全部互动 ${icon('arrow')}</button><div class="ew-space-note">${icon('spark')}<p>想知道最近发生了什么？<br>进入设备，按需生成一份小结。</p></div></aside></div>`;
+      return `<section class="ew-scene-panel"><div class="ew-scene-toolbar"><div class="ew-segment" aria-label="设备筛选">${[['all','全部'],['online','在线'],['offline','离线']].map(([key,label])=>`<button data-action="filter" data-value="${key}" aria-pressed="${s.filter===key}">${label}</button>`).join('')}</div><div class="ew-toolbar-right"><label class="ew-search">${icon('search')}<input name="search" placeholder="找一台设备" value="${esc(s.query)}" aria-label="查找设备"></label><button class="ew-icon-button" data-action="layout" aria-label="${s.layout==='space'?'切换列表视图':'切换空间视图'}" aria-pressed="${s.layout==='list'}">${icon(s.layout==='space'?'list':'space')}</button></div></div><div class="ew-scene-scroll">${!devices.length?empty('没有找到这台设备','试试其他名称或查看全部设备。',true):s.layout==='list'?`<div class="ew-device-list">${devices.map(d=>`<button data-action="device" data-id="${esc(id(d))}"><span class="ew-list-device">${icon('space')}</span><span><strong>${esc(d.name)}</strong><small>${taskList(d).length} 项任务 · 最近互动 ${time(d.lastInteractionAt)}</small></span><span class="ew-status ${d.online?'':'ew-status-off'}">${d.online?'管理连接在线':'管理连接离线'}</span>${icon('arrow')}</button>`).join('')}</div>`:scene(s.devices,{visible:new Set(devices.map(id)),slots:activity.slots,columns:activity.columns})}</div><div class="ew-scene-footer"><span><i class="ew-status-dot"></i>点击工作台，看看设备的小世界</span><span>${devices.length} 台设备 · ${s.layout==='space'?'空间视图':'列表视图'}</span></div></section>`;
     }
     function tasks() {
       const tasks=allTasks();
@@ -265,8 +265,10 @@
       const drawer=root.querySelector('.ew-drawer-body');if(drawer)remembered.drawer[drawer.dataset.scrollKey]=drawer.scrollTop;
       Object.assign(remembered,{query:s.query,filter:s.filter,layout:s.layout,libraryLayout:s.libraryLayout,eventPeriod:s.eventPeriod,eventType:s.eventType});workspaceMemory.set(memoryKey,remembered);
     }
-    function updatePart(name,html){const slot=root.querySelector(`[data-ew-part="${name}"]`);if(slot.__ewHtml===html)return;
-      if(name==='content'&&slot.querySelector('.ew-space-layout')&&html.includes('class="ew-space-layout"')){const temp=document.createElement('div');temp.innerHTML=html;for(const selector of ['.ew-scene-panel','.ew-activity']){const old=slot.querySelector(selector),next=temp.querySelector(selector);const cacheKey=selector==='.ew-scene-panel'?'__ewPanelHtml':'__ewActivityHtml';if(old&&next&&slot[cacheKey]!==next.outerHTML)old.replaceWith(next);if(next)slot[cacheKey]=next.outerHTML;}}else{slot.innerHTML=html;if(name==='content'){slot.__ewPanelHtml=slot.querySelector('.ew-scene-panel')?.outerHTML;slot.__ewActivityHtml=slot.querySelector('.ew-activity')?.outerHTML;}}
+    function updatePart(name,html){
+      const slot=root.querySelector(`[data-ew-part="${name}"]`);
+      if(slot.__ewHtml===html)return;
+      slot.innerHTML=html;
       slot.__ewHtml=html;
     }
     function syncActivities(){
@@ -467,7 +469,6 @@
       const b=event.target.closest('[data-action]');if(!b||!root.contains(b))return;const action=b.dataset.action;
       if(action==='device')return go(s.view,b.dataset.id);
       if(action==='close-drawer')return go(s.view);
-      if(action==='view')return go(b.dataset.value);
       if(action==='native'){setMode(false);return;}
       if(action==='dismiss')s.error='';
       if(action==='filter')s.filter=b.dataset.value;
@@ -493,6 +494,7 @@
     function input(event) {if(event.target.name==='question')s.question=event.target.value;if(event.target.name==='search'){s.query=event.target.value;render();}}
     function change(event){if(['eventPeriod','eventType','eventSession'].includes(event.target.name)){s[event.target.name]=event.target.value;resetEventFilters();return;}if(event.target.name==='period')s.period=event.target.value;if(event.target.name==='eventsDevice'){s.deviceId=event.target.value;s.eventSession='';go('interactions',s.deviceId);}}
     function keydown(event) {
+      if(document.getElementById('ew-navigation')?.open)return;
       if(event.key==='Escape'&&s.deviceId&&s.view!=='interactions'){event.preventDefault();go(s.view);}
       if(['Enter',' '].includes(event.key)&&event.target.matches('g[data-action]')){event.preventDefault();event.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}
       if(event.key==='Tab'&&s.deviceId&&s.view!=='interactions'){const drawer=root.querySelector('.ew-drawer');const nodes=[...drawer.querySelectorAll('button:not(:disabled),a,input,select,textarea,summary,[tabindex="0"]')];if(!nodes.length)return;if(!drawer.contains(document.activeElement)){event.preventDefault();nodes[0].focus();return;}if(event.shiftKey&&document.activeElement===nodes[0]){event.preventDefault();nodes.at(-1).focus();}else if(!event.shiftKey&&document.activeElement===nodes.at(-1)){event.preventDefault();nodes[0].focus();}}
@@ -514,18 +516,59 @@
     });
     return ()=>{saveView();alive=false;sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
   }
+  function createNavigation() {
+    const shell=document.createElement('div');
+    shell.className='ew-menu-shell';
+    shell.innerHTML=`<button type="button" class="ew-menu-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="ew-navigation">${icon('menu')}<span>菜单</span></button>
+      <dialog class="ew-menu-drawer" id="ew-navigation" aria-label="工作空间导航">
+        <div data-edgestack-nav>
+          <button type="button" class="ew-menu-close ew-icon-button" aria-label="关闭菜单" autofocus>${icon('close')}</button>
+          <nav aria-label="EdgeStack 工作空间"><a class="ew-nav-brand" aria-label="EdgeStack 我的空间" href="#!/workspace?view=space"><span class="ew-brand-mark">${icon('space')}</span><span>EdgeStack<span class="ew-brand-dot">.</span></span></a>${views.map(v=>`<a class="ew-nav-item" aria-label="${titles[v]}" title="${titles[v]}" data-view="${v}" href="#!/workspace?view=${v}">${icon(v==='library'?'library':v)}<span>${titles[v]}</span></a>`).join('')}</nav>
+          <nav class="ew-nav-bottom" aria-label="账号与管理">${isAdmin()?'<a class="ew-nav-item" href="#!/home">'+icon('arrow')+'<span>返回管理后台</span></a>':''}<a class="ew-nav-item" aria-label="我的账号" title="我的账号" href="#!/account">${icon('user')}<span>我的账号</span></a><a class="ew-nav-item" aria-label="退出登录" title="退出登录" href="#!/logout">${icon('logout')}<span>退出登录</span></a></nav>
+        </div>
+      </dialog>`;
+    const button=shell.querySelector('.ew-menu-button');
+    const drawer=shell.querySelector('dialog');
+    button.addEventListener('click',()=>{
+      drawer.showModal();
+      button.setAttribute('aria-expanded','true');
+    });
+    drawer.addEventListener('close',()=>{
+      button.setAttribute('aria-expanded','false');
+    });
+    drawer.addEventListener('click',event=>{
+      const link=event.target.closest('a[href]');
+      const follow=link&&!event.metaKey&&!event.ctrlKey&&!event.shiftKey&&!event.altKey;
+      if(event.target===drawer||event.target.closest('.ew-menu-close')||follow)drawer.close();
+    });
+    return shell;
+  }
   function nav() {
-    const side=document.querySelector('#sideview');if(!auth.isAuthenticated()){document.body.classList.remove('edgestack-user','edgestack-admin-preview');workspaceMemory.clear();activityMemory.clear();side?.querySelector('[data-edgestack-nav]')?.remove();return;}if(!side)return;
-    let menu=side.querySelector('[data-edgestack-nav]');
+    const side=document.querySelector('#sideview');
+    const shell=side?.querySelector('.ew-menu-shell');
+    if(!auth.isAuthenticated()){
+      document.body.classList.remove('edgestack-user','edgestack-admin-preview');
+      workspaceMemory.clear();activityMemory.clear();shell?.remove();
+      return;
+    }
+    if(!side)return;
     if(isAdmin()&&!workspaceRoute()){
-      menu?.remove();let preview=side.querySelector('[data-edgestack-preview]');
+      shell?.remove();
+      let preview=side.querySelector('[data-edgestack-preview]');
       if(!preview){preview=document.createElement('a');preview.dataset.edgestackPreview='';preview.className='ew-admin-preview';preview.href='#!/workspace?view=space';preview.title='用户视图预览';preview.setAttribute('aria-label','用户视图预览');preview.innerHTML=icon('space')+'<span>用户视图预览</span>';}
-      const host=side.querySelector('.sidebar')||side;if(preview.parentElement!==host)host.append(preview);
-      setMode(workspaceRoute());return;
+      const host=side.querySelector('.sidebar')||side;
+      if(preview.parentElement!==host)host.append(preview);
+      setMode();return;
     }
     side.querySelector('[data-edgestack-preview]')?.remove();
-    if(!menu){menu=document.createElement('nav');menu.dataset.edgestackNav='';menu.setAttribute('aria-label','EdgeStack 工作空间');menu.innerHTML=`<a class="ew-nav-brand" aria-label="EdgeStack 我的空间" href="#!/workspace?view=space"><span class="ew-brand-mark">${icon('space')}</span><span>EdgeStack<span class="ew-brand-dot">.</span><small>你的边缘工作空间</small></span></a><div class="ew-nav-caption">${isAdmin()?'管理员预览':'工作空间'}</div>${views.map(v=>`<a class="ew-nav-item" aria-label="${titles[v]}" title="${titles[v]}" data-view="${v}" href="#!/workspace?view=${v}">${icon(v==='library'?'library':v)}<span>${titles[v]}</span>${v==='space'?'<span class="ew-nav-live"></span>':''}</a>`).join('')}<div class="ew-nav-garden"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot()}</svg><strong>小小设备，大有作为</strong><p>你的每一份工作，<br>都在自己的空间里成长。</p></div><div class="ew-nav-bottom">${isAdmin()?'<a class="ew-nav-item" href="#!/home">'+icon('arrow')+'<span>返回管理后台</span></a>':''}<a class="ew-nav-item" aria-label="我的账号" title="我的账号" href="#!/account">${icon('user')}<span>我的账号</span></a><a class="ew-nav-item" aria-label="退出登录" title="退出登录" href="#!/logout">${icon('logout')}<span>退出登录</span></a><div class="ew-nav-footnote">CONNECTED TO YOUR EVERYDAY</div></div>`;side.prepend(menu);}
-    const current=normalView(router.params?.view||routeParams().view);menu.querySelectorAll('[data-view]').forEach(a=>{const active=workspaceRoute()&&a.dataset.view===current;if(active)a.setAttribute('aria-current','page');else a.removeAttribute('aria-current');});setMode(workspaceRoute());
+    const navigation=shell||createNavigation();
+    if(!shell)side.prepend(navigation);
+    const current=normalView(router.params?.view||routeParams().view);
+    navigation.querySelectorAll('[data-view]').forEach(link=>{
+      if(workspaceRoute()&&link.dataset.view===current)link.setAttribute('aria-current','page');
+      else link.removeAttribute('aria-current');
+    });
+    setMode();
   }
   function register() {
     if(!window.angular)return false;
@@ -533,7 +576,7 @@
     router=injector.get('$state');auth=injector.get('Authentication');const registry=injector.get('$stateRegistry');
     function registerRoute(name,url){if(!registry.get(name))registry.register({name,url,data:{access:'restricted'},views:{'content@':{template:'<main data-edgestack-workspace class="ew-workspace"></main>',controller:['$element','$scope','$stateParams',function($element,$scope,$stateParams){setMode(true);nav();const destroy=Workspace($element[0],$stateParams);$scope.$on('$destroy',destroy);}]}}});}
     registerRoute('portainer.workspace','/workspace?view&device');registerRoute('portainer.edgestack','/edgestack?view&device&app');
-    injector.get('$transitions').onSuccess({},transition=>{nav();if(transition.to().name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});});
+    injector.get('$transitions').onSuccess({},transition=>{document.getElementById('ew-navigation')?.close();nav();if(transition.to().name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});});
     let queued=false;new MutationObserver(()=>{if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;nav();});}}).observe(document.querySelector('#sideview')||document.body,{childList:true,subtree:true});
     nav();
     if(/^#!\/(?:workspace|edgestack)(?:\?|$)/.test(startupHash)&&auth.isAuthenticated()){const q=new URLSearchParams(startupHash.split('?')[1]||'');openWorkspaceAutomatically({view:normalView(q.get('view')),device:q.get('device')||null});}
