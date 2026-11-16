@@ -126,3 +126,8 @@ body:has(.ew-menu-drawer[open]) { overflow: hidden; }
 @media (min-width: 1700px) { .ew-menu-shell { padding-inline: 54px; } }
 @media (max-width: 1200px) { .ew-menu-shell { padding-inline: 25px; } }
 @media (max-width: 640px) { .ew-menu-shell { padding: 12px 14px 0; } }
+
+.ew-header-actions > .ew-icon-button,
+.ew-toolbar-right > .ew-icon-button,
+.ew-list-device { color: #526449; }
+.ew-menu-drawer .ew-nav-item > .ew-icon { stroke-width: 2; }

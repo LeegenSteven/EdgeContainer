@@ -36,6 +36,17 @@ const assert = require('node:assert/strict');
     const navigation = page.locator('#ew-navigation');
     assert.equal(await navigation.isVisible(),false);
     assert.equal(await page.locator('.ew-activity').count(),0);
+    const stationGlyphs = await page.locator('.ew-device-screen').evaluateAll(glyphs=>glyphs.map(glyph=>glyph.dataset.icon));
+    assert.deepEqual(stationGlyphs,['audio','camera','web','audio','device','audio','camera','mixed']);
+    assert.equal(await page.locator('.ew-offline .ew-device-screen').count(),2);
+    await page.getByRole('button',{name:'切换列表视图'}).click();
+    const listGlyphs = await page.locator('.ew-list-device').evaluateAll(glyphs=>glyphs.map(glyph=>glyph.dataset.icon));
+    assert.deepEqual(listGlyphs,stationGlyphs);
+    assert.equal(await page.locator('.ew-device-list').getByText('管理连接离线',{exact:true}).count(),2);
+    await page.setViewportSize({width:390,height:1000});
+    await page.screenshot({path:path.join(output,'device-icons-mobile.png')});
+    await page.setViewportSize({width:1440,height:1000});
+    await page.getByRole('button',{name:'切换空间视图'}).click();
     for (const width of [1440,390]) {
       await page.setViewportSize({width,height:1000});
       await menu.focus();
