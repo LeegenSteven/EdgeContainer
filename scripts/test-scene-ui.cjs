@@ -6,7 +6,7 @@ const assert=require('node:assert/strict');
 const http=require('node:http');
 const zlib=require('node:zlib');
 const {chromium}=require('playwright');
-const out=path.resolve('.local/visual-workspace/ui');fs.mkdirSync(out,{recursive:true});
+const out=path.resolve('deliverables/验证记录/workspace');fs.mkdirSync(out,{recursive:true});
 const css=fs.readFileSync('portainer/app/edgestack/workspace.css','utf8');
 const js=fs.readFileSync('portainer/app/edgestack/workspace.js','utf8').replaceAll('__EDGESTACK_VERSION__','ui-test');
 function fixture(){

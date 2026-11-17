@@ -1,8 +1,8 @@
 // Native React administration smoke using an offline HTML build and synthetic
 // API records only. It launches a fresh browser profile, never opens a live
 // Server, and never reads a real account, token, model or device configuration.
-// Requires Playwright; see the CLI usage below. Reports stay under .local by
-// default. The test-only facade is not imported by any production build.
+// Requires Playwright; see the CLI usage below. Reports default to
+// deliverables/验证记录/admin-native. This test owns its synthetic API facade.
 const fs = require("node:fs");
 const path = require("node:path");
 const assert = require("node:assert/strict");
@@ -14,7 +14,7 @@ if (!process.argv[2]) {
   );
   process.exit(2);
 }
-const folder = path.resolve(process.argv[3] || ".local/admin-native-ui");
+const folder = path.resolve(process.argv[3] || "deliverables/验证记录/admin-native");
 fs.mkdirSync(path.join(folder, "screenshots"), { recursive: true });
 const input = path.resolve(process.argv[2]),
   file = path.join(folder, "admin-native-facade.html");

@@ -6,6 +6,8 @@
 *.pem
 *.key
 __pycache__/
-# Generated demo deliverables and machine-specific evidence stay local.
+# Generated meeting-demo files stay local.
 /deliverables/
-/docs/evidence/
+/docs/evidence/*-conference-demo.json
+# Local delivery backups.
+/backups/

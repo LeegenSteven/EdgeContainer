@@ -18,7 +18,7 @@ const assert = require('node:assert/strict');
   page.on('console', (message) => { if (message.type() === 'error') consoleErrors.push(message.text().slice(0, 600)); });
   page.on('request', (r) => { if (/^https?:/.test(r.url())) external.push(r.url()); });
   const outputIndex = process.argv.indexOf('--output');
-  const output = path.resolve(outputIndex === -1 ? '.local/conference' : process.argv[outputIndex + 1]);
+  const output = path.resolve(outputIndex === -1 ? 'deliverables/验证记录/conference' : process.argv[outputIndex + 1]);
   fs.mkdirSync(output, { recursive: true });
   try {
     await page.goto(pathToFileURL(file).href, { waitUntil: 'load', timeout: 30000 });
