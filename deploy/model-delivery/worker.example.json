@@ -1,0 +1,84 @@
+{
+  "workerId": "delivery-worker-01",
+  "server": {
+    "base_url": "https://server.example.test:9443",
+    "token_file": "/etc/edgestack-delivery/server-worker.token",
+    "ca_file": "/etc/edgestack-delivery/server-ca.pem",
+    "timeout": 60
+  },
+  "agentdp": {
+    "base_url": "http://127.0.0.1:8876",
+    "token_file": "/etc/edgestack-delivery/agentdp.token",
+    "timeout": 30
+  },
+  "stateDir": "/var/lib/edgestack-delivery/state",
+  "workDir": "/var/lib/edgestack-delivery/work",
+  "bundleDir": "/srv/edgestack-delivery/artifacts",
+  "buildctl": "/usr/local/bin/buildctl",
+  "buildkitAddress": "unix:///run/buildkit/buildkitd.sock",
+  "skopeo": "/usr/bin/skopeo",
+  "registryRepository": "registry.example.test:5000/edgestack/models",
+  "registryAuthFile": "/etc/edgestack-delivery/registry-auth.json",
+  "openssl": "/usr/bin/openssl",
+  "signingKeyFile": "/etc/edgestack-delivery/offline-ed25519.key",
+  "trustedPublicKeyFile": "/etc/edgestack-delivery/offline-ed25519.pub",
+  "pollSeconds": 5,
+  "devices": {
+    "rk3588-device": {
+      "agentdpDevice": "rk3588",
+      "validationTaskId": "rk3588-isolated-test"
+    }
+  },
+  "recipes": [
+    {
+      "id": "prepared-asr-rknn-v1",
+      "enabled": false,
+      "serverRecipeDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "contextDir": "/opt/edgestack/deploy/model-delivery/recipes/asr",
+      "contextDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "runtimeBundleDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "modelPath": "payload/model.rknn",
+      "inputFormats": ["rknn"],
+      "sourceRoots": ["/srv/edgestack-delivery/models"],
+      "maxModelBytes": 4294967296,
+      "agentdpDeployment": "approved-asr-encoder-validation",
+      "nativeModelIdPath": "model_id",
+      "nativeModelHashPath": "model_sha256",
+      "nativeTimeoutSeconds": 1800,
+      "buildTimeoutSeconds": 1800,
+      "validationTimeoutSeconds": 600,
+      "containerProbeArgv": [
+        "/usr/bin/python3", "/opt/edgestack/worker/model-delivery/container_probe.py",
+        "--config", "/etc/edgestack-delivery/asr-probe.json",
+        "--device-id", "{deviceId}", "--task-id", "{taskId}",
+        "--image", "{image}", "--model-hash", "{modelHash}",
+        "--runtime-profile-digest", "{runtimeProfileDigest}", "--nonce", "{nonce}"
+      ]
+    },
+    {
+      "id": "prepared-yolo-rknn-v1",
+      "enabled": false,
+      "serverRecipeDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "contextDir": "/opt/edgestack/deploy/model-delivery/recipes/yolo",
+      "contextDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "runtimeBundleDigest": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "modelPath": "payload/model.rknn",
+      "inputFormats": ["rknn"],
+      "sourceRoots": ["/srv/edgestack-delivery/models"],
+      "maxModelBytes": 4294967296,
+      "agentdpDeployment": "approved-yolo-validation",
+      "nativeModelIdPath": "model_name",
+      "nativeModelHashPath": "rknn_sha256",
+      "nativeTimeoutSeconds": 1800,
+      "buildTimeoutSeconds": 1800,
+      "validationTimeoutSeconds": 600,
+      "containerProbeArgv": [
+        "/usr/bin/python3", "/opt/edgestack/worker/model-delivery/container_probe.py",
+        "--config", "/etc/edgestack-delivery/yolo-probe.json",
+        "--device-id", "{deviceId}", "--task-id", "{taskId}",
+        "--image", "{image}", "--model-hash", "{modelHash}",
+        "--runtime-profile-digest", "{runtimeProfileDigest}", "--nonce", "{nonce}"
+      ]
+    }
+  ]
+}

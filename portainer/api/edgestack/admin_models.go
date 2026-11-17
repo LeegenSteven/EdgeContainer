@@ -80,7 +80,8 @@ func (s *Service) selectionAllowed(r *http.Request, tx *bolt.Tx, task Task, devi
 		p, err := s.principal(r)
 		return err == nil && p.Admin && intent.packageID == model.ID && intent.taskID == task.ID && task.TestTask && task.RuntimeBackend != "" && task.TemplateID != "" && model.RuntimeBackend != "" && len(model.TemplateIDs) > 0 && compatibleBody(task, device, model)
 	}
-	return model.Published && compatibleBody(task, device, model) && s.policyAllows(tx, task, device, model)
+	principal, err := s.principal(r)
+	return err == nil && model.Published && compatibleBody(task, device, model) && s.policyAllows(tx, task, device, model, principal)
 }
 func validationRequest(r *http.Request, intent validationIntent, payload any) *http.Request {
 	body, _ := json.Marshal(payload)

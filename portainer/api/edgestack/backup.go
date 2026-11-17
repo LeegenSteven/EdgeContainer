@@ -157,6 +157,9 @@ func (s *Service) ApplyRestorePolicy(endpointExists func(int) bool, aclExists fu
 				}
 			}
 		}
+		if err := s.restoreDelivery(tx); err != nil {
+			return err
+		}
 		// Old previews never become a new deployment after recovery.
 		if err := tx.DeleteBucket([]byte("previews")); err != nil && err != bolt.ErrBucketNotFound {
 			return err

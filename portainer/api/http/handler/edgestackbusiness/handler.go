@@ -57,31 +57,36 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 			return nil, errors.New("unable to read voice test page")
 		}
 	}
+	inspectAccess := func(userID, endpointID int) (edgestack.Principal, bool, error) {
+		user, err := store.User().Read(portainer.UserID(userID))
+		if err != nil {
+			return edgestack.Principal{}, false, err
+		}
+		memberships, err := store.TeamMembership().TeamMembershipsByUserID(user.ID)
+		if err != nil {
+			return edgestack.Principal{}, false, err
+		}
+		p := edgestack.Principal{UserID: userID, Admin: user.Role == portainer.AdministratorRole}
+		for _, member := range memberships {
+			p.TeamIDs = append(p.TeamIDs, int(member.TeamID))
+		}
+		endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(endpointID))
+		if err != nil {
+			return p, false, err
+		}
+		group, err := store.EndpointGroup().Read(endpoint.GroupID)
+		if err != nil {
+			return p, false, err
+		}
+		return p, p.Admin || security.AuthorizedEndpointAccess(endpoint, group, user.ID, memberships), nil
+	}
+	provisioner, err := newDeliveryProvisioner(store, files, stacks, os.Getenv("EDGESTACK_DELIVERY_TEMPLATES_FILE"))
+	if err != nil {
+		return nil, err
+	}
 	service, err := edgestack.Open(filepath.Join(files.GetDatastorePath(), "edgestack", "business.db"), edgestack.Options{
 		ValidateACL: validateACL, BackgroundWriteLease: lease,
-		InspectAccess: func(userID, endpointID int) (edgestack.Principal, bool, error) {
-			user, err := store.User().Read(portainer.UserID(userID))
-			if err != nil {
-				return edgestack.Principal{}, false, err
-			}
-			memberships, err := store.TeamMembership().TeamMembershipsByUserID(user.ID)
-			if err != nil {
-				return edgestack.Principal{}, false, err
-			}
-			p := edgestack.Principal{UserID: userID, Admin: user.Role == portainer.AdministratorRole}
-			for _, member := range memberships {
-				p.TeamIDs = append(p.TeamIDs, int(member.TeamID))
-			}
-			endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(endpointID))
-			if err != nil {
-				return p, false, err
-			}
-			group, err := store.EndpointGroup().Read(endpoint.GroupID)
-			if err != nil {
-				return p, false, err
-			}
-			return p, p.Admin || security.AuthorizedEndpointAccess(endpoint, group, user.ID, memberships), nil
-		},
+		InspectAccess: inspectAccess,
 		Authenticated: bouncer.AuthenticatedAccess, AdminAccess: bouncer.AdminAccess,
 		Authenticate: func(r *http.Request) (edgestack.Principal, error) {
 			// Re-run the original authenticator when delayed results are
@@ -112,11 +117,16 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 			return p, nil
 		},
 		EndpointAccess: func(r *http.Request, id int) bool {
+			if actor, internal := edgestack.DeliveryPrincipal(r); internal {
+				_, allowed, err := inspectAccess(actor.UserID, id)
+				return err == nil && allowed
+			}
 			endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(id))
 			return err == nil && bouncer.AuthorizedEndpointOperation(r, endpoint) == nil
 		},
 		Dispatcher: dispatcher, ValidateTask: dispatcher.ValidateTask, Provider: edgestack.NewDeepSeekProviderFromEnv(),
-		VoiceTestHTML: voiceTestHTML,
+		VoiceTestHTML:       voiceTestHTML,
+		DeliveryProvisioner: provisioner, DeliveryObserveHealth: deliveryHealthObserver(mounts),
 		MountProvider: mounts, VerifyModelRuntime: modelRuntimeVerifier(mounts),
 		DeviceStatus: func(_ *http.Request, id int) (bool, time.Time) {
 			endpoint, err := store.Endpoint().Endpoint(portainer.EndpointID(id))
@@ -146,7 +156,24 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		service.Close()
 		return nil, errors.New("unable to apply business retention policy")
 	}
+	execution, err := newDeliveryExecutionAuthority(service, store)
+	if err != nil {
+		service.Close()
+		return nil, err
+	}
+	execution.mounts, _ = mounts.(*mountProvider)
+	execution.adminAccess = bouncer.AdminAccess
+	service.SetDeliveryExecutionAuthority(execution)
+	dispatcher.execution = execution
+	dispatcher.requireExecution = os.Getenv("EDGESTACK_DELIVERY_ENABLED") == "true"
+	if p, ok := provisioner.(*deliveryProvisioner); ok {
+		p.PrepareExecution = execution.Prepare
+		p.CheckExecution = execution.Preview
+		p.mounts, _ = mounts.(*mountProvider)
+	}
+	go execution.Run(ctx)
 	go service.RunRetention(ctx)
+	go service.RunDelivery(ctx)
 	return service, nil
 }
 

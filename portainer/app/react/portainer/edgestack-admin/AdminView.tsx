@@ -13,6 +13,7 @@ import { CredentialsPanel } from './CredentialsPanel';
 import { ModelsPage } from './ModelsPage';
 import { OperationsPage } from './OperationsPage';
 import { CloudPage } from './CloudPage';
+import { DeliveryManagement } from './DeliveryManagement';
 
 export function AdminView() {
   const { isPureAdmin } = useCurrentUser();
@@ -39,6 +40,7 @@ export function AdminView() {
       {section === 'sources' && !id && !isNew && <CredentialsPanel />}
       {section === 'access' && <AccessPage />}
       {section === 'models' && <ModelsPage id={id} isNew={isNew} />}
+      {section === 'models' && !id && !isNew && <DeliveryManagement />}
       {section === 'operations' && <OperationsPage id={id} />}
       {section === 'cloud' && <CloudPage />}
     </div>

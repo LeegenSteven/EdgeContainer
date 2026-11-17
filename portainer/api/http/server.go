@@ -196,6 +196,12 @@ func (server *Server) Start(ctx context.Context) error {
 	endpointHandler.PullLimitCheckDisabled = server.PullLimitCheckDisabled
 
 	var endpointEdgeHandler = endpointedge.NewHandler(requestBouncer, server.DataStore, server.FileService, server.ReverseTunnelService)
+	executionAuthority := businessService.DeliveryExecutionAuthority()
+	if executionAuthority != nil {
+		endpointEdgeHandler.ExecutionPayload = executionAuthority.Payload
+		endpointEdgeHandler.ExecutionCapability = executionAuthority.ObserveCapability
+		endpointEdgeHandler.ExecutionVerify = edgestackbusiness.NewExecutionGrantHandler(server.DataStore, executionAuthority.Verify)
+	}
 
 	var endpointGroupHandler = endpointgroups.NewHandler(requestBouncer)
 	endpointGroupHandler.AuthorizationService = server.AuthorizationService
@@ -350,7 +356,11 @@ func (server *Server) Start(ctx context.Context) error {
 
 	errorLogger := NewHTTPLogger()
 
-	handler := adminMonitor.WithRedirect(offlineGate.WaitingMiddleware(time.Minute, server.Handler))
+	var guardedHandler http.Handler = server.Handler
+	if executionAuthority != nil {
+		guardedHandler = executionAuthority.NativeGuard(guardedHandler)
+	}
+	handler := adminMonitor.WithRedirect(offlineGate.WaitingMiddleware(time.Minute, guardedHandler))
 
 	handler = middlewares.WithPanicLogger(middlewares.WithSlowRequestsLogger(handler))
 

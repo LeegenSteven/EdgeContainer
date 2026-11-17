@@ -3,6 +3,7 @@ package stack
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ type StackManager struct {
 	awsConfig       *agent.AWSConfig
 	mu              sync.Mutex
 	kubeClient      *kubernetes.KubeClient
+	executionFences *executionFenceStore
 }
 
 // NewStackManager returns a pointer to a new instance of StackManager
@@ -55,6 +57,7 @@ func NewStackManager(cli client.PortainerClient, config *agent.AWSConfig, edgeID
 		awsConfig:       config,
 		edgeID:          edgeID,
 		kubeClient:      kubeClient,
+		executionFences: &executionFenceStore{path: filepath.Join(agent.DefaultDataPath, "edgestack-execution-fences.json")},
 	}
 }
 

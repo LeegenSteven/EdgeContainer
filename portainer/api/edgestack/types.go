@@ -78,6 +78,7 @@ type Task struct {
 }
 
 type ModelPackage struct {
+	ArtifactID      string            `json:"artifactId,omitempty"`
 	RuntimeBackend  string            `json:"runtimeBackend,omitempty"`
 	TemplateIDs     []string          `json:"templateIds,omitempty"`
 	ID              string            `json:"id"`
@@ -270,20 +271,27 @@ type RuntimeProvider interface {
 }
 
 type Options struct {
-	Cloud                *CloudOptions
-	ValidateACL          func(ACL) error
-	InspectAccess        func(int, int) (Principal, bool, error)
-	BackgroundWriteLease func() (func(), error)
-	Authenticate         func(*http.Request) (Principal, error)
-	EndpointAccess       func(*http.Request, int) bool
-	Authenticated        func(http.Handler) http.Handler
-	AdminAccess          func(http.Handler) http.Handler
-	Dispatcher           Dispatcher
-	ValidateTask         func(context.Context, Task) error
-	VerifyModelRuntime   func(context.Context, Task, ModelPackage) error
-	Provider             Provider
-	Now                  func() time.Time
-	DeviceStatus         func(*http.Request, int) (bool, time.Time)
-	VoiceTestHTML        []byte
-	MountProvider        MountProvider
+	DeliveryExecutionAuthority   DeliveryExecutionAuthority
+	DeliveryArtifactRoot         string
+	DeliveryTrustedPublicKeyFile string
+	DeliveryEnabled              bool
+	DeliveryWorkerTokenFile      string
+	DeliveryProvisioner          DeliveryProvisioner
+	DeliveryObserveHealth        func(context.Context, Task, ModelPackage) error
+	Cloud                        *CloudOptions
+	ValidateACL                  func(ACL) error
+	InspectAccess                func(int, int) (Principal, bool, error)
+	BackgroundWriteLease         func() (func(), error)
+	Authenticate                 func(*http.Request) (Principal, error)
+	EndpointAccess               func(*http.Request, int) bool
+	Authenticated                func(http.Handler) http.Handler
+	AdminAccess                  func(http.Handler) http.Handler
+	Dispatcher                   Dispatcher
+	ValidateTask                 func(context.Context, Task) error
+	VerifyModelRuntime           func(context.Context, Task, ModelPackage) error
+	Provider                     Provider
+	Now                          func() time.Time
+	DeviceStatus                 func(*http.Request, int) (bool, time.Time)
+	VoiceTestHTML                []byte
+	MountProvider                MountProvider
 }

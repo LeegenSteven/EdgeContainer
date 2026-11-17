@@ -1,0 +1,11 @@
+{
+  "schemaVersion": 1,
+  "minimumQuality": 0.9,
+  "samples": [
+    {
+      "audio": "reference.wav",
+      "audioSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "referenceText": "替换为该音频经核对的真实转写文本"
+    }
+  ]
+}

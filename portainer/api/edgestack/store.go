@@ -18,15 +18,18 @@ var buckets = []string{"devices", "tasks", "sources", "events", "credentials", "
 var errNotFound = errors.New("not found")
 
 type Service struct {
-	cloud        *cloudManager
-	closed       chan struct{}
-	closeOnce    sync.Once
-	closeErr     error
-	db           *bolt.DB
-	opts         Options
-	modelMu      sync.Mutex
-	summarySlots chan struct{}
-	summaryUsers sync.Map
+	deliveryObserverKey []byte
+	deliveryEpoch       string
+	deliveryMu          sync.Mutex
+	cloud               *cloudManager
+	closed              chan struct{}
+	closeOnce           sync.Once
+	closeErr            error
+	db                  *bolt.DB
+	opts                Options
+	modelMu             sync.Mutex
+	summarySlots        chan struct{}
+	summaryUsers        sync.Map
 }
 
 func Open(path string, opts Options) (*Service, error) {
@@ -58,6 +61,10 @@ func Open(path string, opts Options) (*Service, error) {
 		return nil, err
 	}
 	if err = s.initCloudSettings(filepath.Dir(path)); err != nil {
+		db.Close()
+		return nil, err
+	}
+	if err = s.initDelivery(); err != nil {
 		db.Close()
 		return nil, err
 	}

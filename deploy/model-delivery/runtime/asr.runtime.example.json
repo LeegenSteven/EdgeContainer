@@ -1,0 +1,14 @@
+{
+  "adapter": "asr",
+  "host": "0.0.0.0",
+  "port": 18622,
+  "asrHost": "0.0.0.0",
+  "asrPort": 8621,
+  "modelPath": "/opt/edgestack/models/encoder.rknn",
+  "slot": "asr-encoder",
+  "language": "zh",
+  "profileManifest": "/opt/edgestack/runtime-profile.json",
+  "workloadManifest": "/opt/edgestack/workloads/asr/manifest.json",
+  "startupTimeoutSeconds": 300,
+  "inferenceTimeoutSeconds": 120
+}

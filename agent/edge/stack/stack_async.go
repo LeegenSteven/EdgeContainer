@@ -14,6 +14,15 @@ import (
 )
 
 func (manager *StackManager) DeleteNormalStack(ctx context.Context, stackName string, removeVolumes bool) error {
+	manager.mu.Lock()
+	if manager.executionFences == nil {
+		manager.executionFences = &executionFenceStore{}
+	}
+	err := manager.executionFences.rejectsNormalStack(stackName)
+	manager.mu.Unlock()
+	if err != nil {
+		return err
+	}
 	log.Debug().Str("stack_name", stackName).Msg("removing normal stack")
 
 	if err := manager.deployer.Remove(ctx, stackName, []string{}, deployer.RemoveOptions{Volumes: removeVolumes}); err != nil {
@@ -39,6 +48,9 @@ func (manager *StackManager) buildDeployerParams(stackPayload edge.StackPayload,
 	// The stack information will be shared with edge agent registry server (request by docker credential helper)
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
+	if err := manager.rememberManagedPayload(&stackPayload); err != nil {
+		return err
+	}
 
 	originalStack, processedStack := manager.stacks[edgeStackID(stackPayload.ID)]
 	if processedStack {
@@ -86,6 +98,8 @@ func (manager *StackManager) buildDeployerParams(stackPayload edge.StackPayload,
 	edgeIdPair := portainer.Pair{Name: agent.EdgeIdEnvVarName, Value: manager.edgeID}
 
 	stack.Name = stackPayload.Name
+	stack.ManagedExecution = stackPayload.ManagedExecution
+	stack.ExecutionGrant = stackPayload.ExecutionGrant
 	stack.RegistryCredentials = stackPayload.RegistryCredentials
 
 	stack.Status = StatusPending

@@ -1,0 +1,21 @@
+[Unit]
+Description=EdgeStack model delivery worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=edgestack-delivery
+WorkingDirectory=/opt/edgestack
+ExecStart=/usr/bin/python3 -B /opt/edgestack/worker/model-delivery/delivery_worker.py --config /etc/edgestack-delivery/worker.json run
+Restart=on-failure
+RestartSec=5
+UMask=0077
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/edgestack-delivery /srv/edgestack-delivery/artifacts
+
+[Install]
+WantedBy=multi-user.target

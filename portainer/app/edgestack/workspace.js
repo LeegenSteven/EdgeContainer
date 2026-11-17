@@ -164,6 +164,7 @@
     const operationFor = task => operations.get(String(task.id));
     let statusCheckedAt = null, statusStale = false, refreshing = 0;
     const requests = new Set(), timers = new Set(),sessionHints=new Map();
+    let delivery;
     const eventFailures = new Map(), eventCoverageByDevice = new Map();
     let activeEvidence = [];
     const s = {view:normalView(params.view), deviceId:String(params.device || ''), devices:[],loading:true,error:'',notice:'',tab:'overview',query:remembered.query,filter:remembered.filter,layout:remembered.layout,libraryLayout:remembered.libraryLayout,relationsOpen:false,events:[],eventPeriod:remembered.eventPeriod||'24',eventType:remembered.eventType||'all',eventSession:'',eventWindow:null,eventCursors:{},eventCoverage:null,eventCursor:'',eventLoading:false,drawerLoading:false,summary:null,summaryQuestion:'',summaryBusy:false,summaryError:'',summaryWindow:null,question:'',period:'24',models:null,modelTaskId:'',preview:null,previousModelLabel:'',modelBusy:false,evidence:null};
@@ -206,7 +207,7 @@
     }
     function header() {
       const online=s.devices.filter(d=>d.online).length;
-      return `<header class="ew-header"><div><div class="ew-eyebrow">YOUR EDGE, TOGETHER${window.EdgeStackDemo?' <span class="ew-demo-label">演示空间 · 模拟数据</span>':''}${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}</div><h1>${titles[s.view]}<span class="ew-heading-dot">.</span></h1><p>${({space:'每台设备都有自己的小天地。看看它们今天在忙什么。',tasks:'业务在设备上协作，进展在这里汇聚。',interactions:'留住与你的设备发生的每一次有意义的互动。',library:'了解任务使用的模型，以及数据安放的位置。'})[s.view]}</p></div><div class="ew-header-actions">${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}<button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button><span class="ew-avatar" aria-label="当前用户">${esc((auth?.getUserDetails()?.Username||auth?.getUserDetails()?.username||'我').slice(0,1).toUpperCase())}</span></div></header>${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}${s.loading?'':`<div class="ew-space-meta"><span><i class="ew-status-dot"></i>${online} 台管理在线</span><span>${s.devices.length} 台设备</span><span>${allTasks().length} 项业务任务</span><span class="ew-status-freshness">${statusStale?'设备状态暂未更新 · 上次同步':'设备状态已同步'} <time>${esc(time(statusCheckedAt))}</time></span></div>`}`;
+      return `<header class="ew-header"><div><div class="ew-eyebrow">YOUR EDGE, TOGETHER${window.EdgeStackDemo?' <span class="ew-demo-label">演示空间 · 模拟数据</span>':''}${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}</div><h1>${titles[s.view]}<span class="ew-heading-dot">.</span></h1><p>${({space:'每台设备都有自己的小天地。看看它们今天在忙什么。',tasks:'业务在设备上协作，进展在这里汇聚。',interactions:'留住与你的设备发生的每一次有意义的互动。',library:'了解任务使用的模型，以及数据安放的位置。'})[s.view]}</p></div><div class="ew-header-actions"><button class="ew-button ew-button-quiet" data-action="delivery">部署模型</button>${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}<button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button><span class="ew-avatar" aria-label="当前用户">${esc((auth?.getUserDetails()?.Username||auth?.getUserDetails()?.username||'我').slice(0,1).toUpperCase())}</span></div></header>${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}${s.loading?'':`<div class="ew-space-meta"><span><i class="ew-status-dot"></i>${online} 台管理在线</span><span>${s.devices.length} 台设备</span><span>${allTasks().length} 项业务任务</span><span class="ew-status-freshness">${statusStale?'设备状态暂未更新 · 上次同步':'设备状态已同步'} <time>${esc(time(statusCheckedAt))}</time></span></div>`}`;
     }
     function space() {
       if(!s.devices.length)return empty('你的空间，等待第一位伙伴','请联系管理员接入设备并授予访问权限。接入后的设备会在这里拥有自己的工作台。');
@@ -510,6 +511,7 @@
     }
     async function click(event) {
       const b=event.target.closest('[data-action]');if(!b||!root.contains(b))return;const action=b.dataset.action;
+      if(action==='delivery'){delivery?.open(s.view==='library'?'catalog':s.view==='tasks'?'jobs':'assistant');return;}
       if(action==='device')return go(s.view,b.dataset.id);
       if(action==='close-drawer')return go(s.view);
       if(action==='native'){setMode(false);return;}
@@ -537,13 +539,16 @@
     function input(event) {if(event.target.name==='question')s.question=event.target.value;if(event.target.name==='search'){s.query=event.target.value;render();}}
     function change(event){if(['eventPeriod','eventType','eventSession'].includes(event.target.name)){s[event.target.name]=event.target.value;resetEventFilters();return;}if(event.target.name==='period')s.period=event.target.value;if(event.target.name==='eventsDevice'){s.deviceId=event.target.value;s.eventSession='';go('interactions',s.deviceId);}}
     function keydown(event) {
-      if(document.getElementById('ew-navigation')?.open)return;
+      if(document.getElementById('ew-navigation')?.open||document.getElementById('ew-delivery')?.open)return;
       if(event.key==='Escape'&&s.deviceId&&s.view!=='interactions'){event.preventDefault();go(s.view);}
       if(['Enter',' '].includes(event.key)&&event.target.matches('g[data-action]')){event.preventDefault();event.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}
       if(event.key==='Tab'&&s.deviceId&&s.view!=='interactions'){const drawer=root.querySelector('.ew-drawer');const nodes=[...drawer.querySelectorAll('button:not(:disabled),a,input,select,textarea,summary,[tabindex="0"]')];if(!nodes.length)return;if(!drawer.contains(document.activeElement)){event.preventDefault();nodes[0].focus();return;}if(event.shiftKey&&document.activeElement===nodes[0]){event.preventDefault();nodes.at(-1).focus();}else if(!event.shiftKey&&document.activeElement===nodes.at(-1)){event.preventDefault();nodes[0].focus();}}
     }
     root.addEventListener('click',click);root.addEventListener('input',input);root.addEventListener('change',change);document.addEventListener('keydown',keydown);
     if(s.view==='library'&&s.deviceId)s.tab='models';
+    const deliveryHost=document.createElement('div');
+    root.parentElement.append(deliveryHost);
+    window.EdgeStackDeliveryUI?.mount(deliveryHost,{devices:()=>s.devices,selectedDevice:()=>s.deviceId}).then(ui=>{if(alive)delivery=ui;else ui.destroy();});
     render();
     refresh().then(()=>{
       if(!alive)return;
@@ -557,7 +562,7 @@
       pollLoop();
       schedule(refreshStatusLoop,statusRefreshInterval);
     });
-    return ()=>{saveView();alive=false;sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
+    return ()=>{saveView();alive=false;delivery?.destroy();deliveryHost.remove();sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
   }
   function createNavigation() {
     const shell=document.createElement('div');
@@ -619,7 +624,7 @@
     router=injector.get('$state');auth=injector.get('Authentication');const registry=injector.get('$stateRegistry');
     function registerRoute(name,url){if(!registry.get(name))registry.register({name,url,data:{access:'restricted'},views:{'content@':{template:'<main data-edgestack-workspace class="ew-workspace"></main>',controller:['$element','$scope','$stateParams',function($element,$scope,$stateParams){setMode(true);nav();const destroy=Workspace($element[0],$stateParams);$scope.$on('$destroy',destroy);}]}}});}
     registerRoute('portainer.workspace','/workspace?view&device');registerRoute('portainer.edgestack','/edgestack?view&device&app');
-    injector.get('$transitions').onSuccess({},transition=>{document.getElementById('ew-navigation')?.close();nav();if(transition.to().name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});});
+    injector.get('$transitions').onSuccess({},transition=>{document.getElementById('ew-navigation')?.close?.();nav();if(transition.to().name==='portainer.home'&&!isAdmin())openWorkspaceAutomatically({view:'space',device:null});});
     let queued=false;new MutationObserver(()=>{if(!queued){queued=true;requestAnimationFrame(()=>{queued=false;nav();});}}).observe(document.querySelector('#sideview')||document.body,{childList:true,subtree:true});
     nav();
     if(/^#!\/(?:workspace|edgestack)(?:\?|$)/.test(startupHash)&&auth.isAuthenticated()){const q=new URLSearchParams(startupHash.split('?')[1]||'');openWorkspaceAutomatically({view:normalView(q.get('view')),device:q.get('device')||null});}

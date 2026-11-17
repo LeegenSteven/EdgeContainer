@@ -1,0 +1,11 @@
+{
+  "service": {
+    "base_url": "https://validation.example.test:18622",
+    "token_file": "/etc/edgestack-delivery/validation-probe.token",
+    "ca_file": "/etc/edgestack-delivery/validation-ca.pem",
+    "timeout": 60
+  },
+  "path": "/edgestack/validation",
+  "workloadFile": "/etc/edgestack-delivery/frozen-probe-inputs.json",
+  "startupTimeoutSeconds": 300
+}

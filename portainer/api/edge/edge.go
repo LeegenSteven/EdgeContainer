@@ -25,6 +25,10 @@ type (
 		Namespace string
 		// Version of the stack file
 		Version int
+		// ManagedExecution requires an authenticated execution grant on the worker.
+		// It remains true after the managed operation completes.
+		ManagedExecution bool            `json:"managedExecution,omitempty"`
+		ExecutionGrant   *ExecutionGrant `json:"executionGrant,omitempty"`
 		// RollbackTo specifies the stack file version to rollback to (only support to rollback to the last version currently)
 		RollbackTo *int
 

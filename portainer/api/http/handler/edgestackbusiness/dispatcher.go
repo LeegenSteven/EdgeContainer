@@ -23,8 +23,10 @@ import (
 // mechanism. It supports only independent, single-service Docker Compose Edge
 // Stacks targeting one approved endpoint; other resources remain unavailable.
 type Dispatcher struct {
-	store dataservices.DataStore
-	files portainer.FileService
+	store            dataservices.DataStore
+	files            portainer.FileService
+	execution        edgestack.DeliveryExecutionAuthority
+	requireExecution bool
 }
 
 func (d *Dispatcher) target(tx dataservices.DataStoreTx, task edgestack.Task) (*portainer.EdgeStack, []byte, error) {
@@ -75,6 +77,19 @@ func (d *Dispatcher) ValidateTask(ctx context.Context, task edgestack.Task) erro
 	})
 }
 func (d *Dispatcher) Preview(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage) (string, error) {
+	if (model.ArtifactID != "" || d.requireExecution) && d.execution == nil {
+		return "", errors.New("execution_authority_required")
+	}
+	if d.execution != nil {
+		managed, _, lookupErr := d.execution.Payload(ctx, task.Target.EndpointID, task.Target.StackID)
+		if model.ArtifactID != "" || managed || d.requireExecution {
+			if err := d.execution.Preview(ctx, task.Target.EndpointID); err != nil {
+				return "", err
+			}
+		} else if lookupErr != nil {
+			return "", lookupErr
+		}
+	}
 	var token string
 	err := d.store.ViewTx(func(tx dataservices.DataStoreTx) error {
 		stack, content, err := d.target(tx, task)
@@ -90,6 +105,35 @@ func (d *Dispatcher) Preview(ctx context.Context, task edgestack.Task, model edg
 	return token, err
 }
 func (d *Dispatcher) Apply(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage, expected string) error {
+	// Lease authority I/O must finish before entering the native datastore's
+	// writer transaction. The final transaction still compares the preview token.
+	if (model.ArtifactID != "" || d.requireExecution) && d.execution == nil {
+		return errors.New("execution_authority_required")
+	}
+	if d.execution != nil {
+		managed, _, lookupErr := d.execution.Payload(ctx, task.Target.EndpointID, task.Target.StackID)
+		if model.ArtifactID != "" || managed || d.requireExecution {
+			var nextVersion int
+			if err := d.store.ViewTx(func(tx dataservices.DataStoreTx) error {
+				stack, content, err := d.target(tx, task)
+				if err != nil {
+					return err
+				}
+				if expected != version(stack, content) {
+					return errors.New("target changed after preview")
+				}
+				nextVersion = stack.Version + 1
+				return nil
+			}); err != nil {
+				return err
+			}
+			if err := d.execution.Prepare(ctx, edgestack.DeliveryOperationID(ctx), task, nextVersion, "deploy"); err != nil {
+				return err
+			}
+		} else if lookupErr != nil {
+			return lookupErr
+		}
+	}
 	var before, updated []byte
 	var original *portainer.EdgeStack
 	fileTouched, restored := false, false

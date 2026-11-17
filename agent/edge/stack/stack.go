@@ -101,7 +101,7 @@ func (manager *StackManager) processStack(stackID int, stackStatus client.StackS
 		stack = &clonedStack
 
 		queuedDeleteNotYetStarted := stack.Action == actionDelete && stack.Status == StatusPending
-		if stack.Version == stackStatus.Version && !stackStatus.ForceRedeploy && !queuedDeleteNotYetStarted {
+		if stack.Version == stackStatus.Version && !stackStatus.ForceRedeploy && !queuedDeleteNotYetStarted && !(stack.ManagedExecution && stack.Status == StatusError) {
 			return nil // stack is unchanged
 		}
 
@@ -136,10 +136,15 @@ func (manager *StackManager) processStack(stackID int, stackStatus client.StackS
 	if err != nil {
 		return err
 	}
+	if err := manager.rememberManagedPayload(stackPayload); err != nil {
+		return err
+	}
 
 	edgeIdPair := portainer.Pair{Name: agent.EdgeIdEnvVarName, Value: manager.edgeID}
 
 	stack.Name = stackPayload.Name
+	stack.ManagedExecution = stackPayload.ManagedExecution
+	stack.ExecutionGrant = stackPayload.ExecutionGrant
 	stack.RegistryCredentials = stackPayload.RegistryCredentials
 	stack.Namespace = stackPayload.Namespace
 	stack.PrePullImage = stackPayload.PrePullImage
@@ -551,13 +556,18 @@ func (manager *StackManager) pullImages(ctx context.Context, stack *edgeStack, s
 		// cause a normal retry
 		log.Error().Err(err).Msg("unable to ensure registry credentials")
 	} else {
-		err = manager.deployer.Pull(ctx, stackName, []string{stackFileLocation}, deployer.PullOptions{
-			DeployerBaseOptions: deployer.DeployerBaseOptions{
-				WorkingDir: stack.FileFolder,
-				Env:        envVars,
-				Registries: regCreds,
-			},
-		})
+		executionCtx, complete, grantErr := manager.managedExecutionContext(ctx, stack, "pull")
+		if grantErr != nil {
+			err = grantErr
+		} else {
+			err = complete(manager.deployer.Pull(executionCtx, stackName, []string{stackFileLocation}, deployer.PullOptions{
+				DeployerBaseOptions: deployer.DeployerBaseOptions{
+					WorkingDir: stack.FileFolder,
+					Env:        envVars,
+					Registries: regCreds,
+				},
+			}))
+		}
 	}
 
 	manager.mu.Lock()
@@ -569,7 +579,7 @@ func (manager *StackManager) pullImages(ctx context.Context, stack *edgeStack, s
 			Msg("images pull failed")
 
 		withinRetryPeriod := stack.RetryPeriod <= 0 || int(time.Since(stack.FirstAction).Seconds()) < stack.RetryPeriod
-		if stack.PullCount < maxRetries && withinRetryPeriod {
+		if !stack.ManagedExecution && stack.PullCount < maxRetries && withinRetryPeriod {
 			stack.Status = StatusRetry
 
 			return err
@@ -644,22 +654,27 @@ func (manager *StackManager) deployStack(ctx context.Context, stack *edgeStack, 
 		// cause a normal retry
 		log.Error().Err(err).Msg("unable to ensure registry credentials")
 	} else {
-		appLabels := buildK8sAppLabels(stack)
-		err = manager.deployer.Deploy(ctx, stackName, []string{stackFileLocation},
-			deployer.DeployOptions{
-				DeployerBaseOptions: deployer.DeployerBaseOptions{
-					Namespace:  stack.Namespace,
-					WorkingDir: stack.FileFolder,
-					Env:        envVars,
-					Registries: regCreds,
+		executionCtx, complete, grantErr := manager.managedExecutionContext(ctx, stack, "deploy")
+		if grantErr != nil {
+			err = grantErr
+		} else {
+			appLabels := buildK8sAppLabels(stack)
+			err = complete(manager.deployer.Deploy(executionCtx, stackName, []string{stackFileLocation},
+				deployer.DeployOptions{
+					DeployerBaseOptions: deployer.DeployerBaseOptions{
+						Namespace:  stack.Namespace,
+						WorkingDir: stack.FileFolder,
+						Env:        envVars,
+						Registries: regCreds,
+					},
+					EdgeStackID:          portainer.EdgeStackID(stack.ID),
+					Prune:                stack.DeployerOptionsPayload.Prune,
+					ForceRecreate:        stack.DeployerOptionsPayload.ForceRecreate,
+					HelmAppLabels:        appLabels.ToMap(),
+					BindMountHashEnabled: stack.SupportPerDeviceConfigs,
 				},
-				EdgeStackID:          portainer.EdgeStackID(stack.ID),
-				Prune:                stack.DeployerOptionsPayload.Prune,
-				ForceRecreate:        stack.DeployerOptionsPayload.ForceRecreate,
-				HelmAppLabels:        appLabels.ToMap(),
-				BindMountHashEnabled: stack.SupportPerDeviceConfigs,
-			},
-		)
+			))
+		}
 	}
 	manager.mu.Lock()
 
@@ -667,7 +682,7 @@ func (manager *StackManager) deployStack(ctx context.Context, stack *edgeStack, 
 		log.Error().Err(err).Int("DeployCount", stack.DeployCount).Msg("stack deployment failed")
 
 		withinRetryPeriod := stack.RetryPeriod <= 0 || int(time.Since(stack.FirstAction).Seconds()) < stack.RetryPeriod
-		if stack.RetryDeploy && stack.DeployCount < maxRetries && withinRetryPeriod {
+		if !stack.ManagedExecution && stack.RetryDeploy && stack.DeployCount < maxRetries && withinRetryPeriod {
 			stack.Status = StatusRetry
 
 			return
@@ -756,8 +771,14 @@ func (manager *StackManager) deleteStack(ctx context.Context, stack *edgeStack, 
 
 	successFileFolder := SuccessStackFileFolder(stack.FileFolder)
 
-	if err := manager.deployer.Remove(
-		ctx,
+	executionCtx, complete, grantErr := manager.managedExecutionContext(ctx, stack, "remove")
+	if grantErr != nil {
+		stack.Status = StatusError
+		_ = manager.portainerClient.SetEdgeStackStatus(stack.ID, stack.Version, portainer.EdgeStackStatusError, stack.RollbackTo, "managed removal refused")
+		return
+	}
+	if err := complete(manager.deployer.Remove(
+		executionCtx,
 		stackName,
 		[]string{stackFileLocation},
 		deployer.RemoveOptions{
@@ -768,7 +789,7 @@ func (manager *StackManager) deleteStack(ctx context.Context, stack *edgeStack, 
 			},
 			Volumes: stack.DeployerOptionsPayload.RemoveVolumes,
 		},
-	); err != nil {
+	)); err != nil {
 		log.Warn().
 			Err(err).
 			Str("context", "EdgeStackManager").
@@ -783,6 +804,9 @@ func (manager *StackManager) deleteStack(ctx context.Context, stack *edgeStack, 
 		// and likely result in additional errors. By setting it to StatusAwaitingCleanup, we ensure the stack
 		// moves directly to the cleanup process.
 		stack.Status = StatusAwaitingCleanup
+		if stack.ManagedExecution {
+			stack.Status = StatusError
+		}
 
 		return
 	}

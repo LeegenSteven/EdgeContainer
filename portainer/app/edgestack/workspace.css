@@ -131,3 +131,45 @@ body:has(.ew-menu-drawer[open]) { overflow: hidden; }
 .ew-toolbar-right > .ew-icon-button,
 .ew-list-device { color: #526449; }
 .ew-menu-drawer .ew-nav-item > .ew-icon { stroke-width: 2; }
+
+.ew-delivery-dialog { position:fixed; inset:16px 16px 16px auto; margin:0; width:min(720px,calc(100vw - 32px)); height:calc(100dvh - 32px); max-height:none; padding:0; border:1px solid #d7e0ca; border-radius:14px; background:#fcfcf8; color:#283b32; }
+.ew-delivery-dialog::backdrop { background:#29352259; }
+.ew-delivery-dialog > header { display:flex; align-items:center; justify-content:space-between; padding:18px 22px; border-bottom:1px solid #d7e0ca; }
+.ew-delivery-dialog h2 { font-size:22px; margin:0; }
+.ew-delivery-dialog h3 { font-size:16px; margin:20px 0 12px; }
+.ew-delivery-dialog > nav { display:flex; gap:6px; overflow-x:auto; padding:10px 18px; border-bottom:1px solid #d7e0ca; }
+.ew-delivery-dialog > nav button { padding:10px; white-space:nowrap; font-size:13px; color:#43583c; }
+.ew-delivery-dialog > nav button[aria-current=page] { background:#e8eedb; border-radius:6px; font-weight:650; }
+.ew-delivery-body { padding:18px 22px 32px; overflow:auto; height:calc(100% - 140px); font-size:14px; }
+.ew-delivery-body form { display:grid; gap:16px; margin-top:20px; }
+.ew-delivery-body label { display:grid; gap:6px; font-size:13px; color:#43583c; }
+.ew-delivery-body :is(input,select,textarea) { padding:10px 12px; width:100%; min-height:44px; border:1px solid #cbd6bf; border-radius:7px; background:#fff; color:#283b32; }
+.ew-delivery-dialog :is(button,input,select,textarea):focus-visible { outline:2px solid #526e3d; outline-offset:2px; }
+.ew-delivery-error { color:#8a352b; padding:12px 0; }
+.ew-delivery-records { list-style:none; padding:0; }
+.ew-delivery-records > li { display:grid; gap:8px; padding:16px 0; border-bottom:1px solid #d7e0ca; overflow-wrap:anywhere; }
+.ew-delivery-records small { color:#526449; }
+.ew-delivery-preview { margin-top:20px; padding:16px; background:#eaf0df; }
+@media(max-width:640px) { .ew-header-actions { flex-wrap:wrap; } .ew-header-actions .ew-button { padding:8px; } }
+.ew-delivery-dialog { font-family:Inter,-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Microsoft YaHei",sans-serif; line-height:1.6; --ew-muted:#526449; box-sizing:border-box; }
+.ew-delivery-dialog *, .ew-delivery-dialog *::before, .ew-delivery-dialog *::after { box-sizing:border-box; }
+.ew-delivery-dialog :is(input,textarea,select,button) { font:inherit; }
+.ew-delivery-dialog button { cursor:pointer; }
+.ew-delivery-dialog button:disabled { opacity:.55; cursor:wait; }
+.ew-delivery-dialog .ew-button { min-height:44px; font-size:13px!important; background:#526e3d; border-color:#526e3d; }
+.ew-delivery-dialog .ew-button:hover { background:#425b30; }
+.ew-delivery-dialog .ew-button-quiet { background:#fff; color:#43583c!important; border-color:#cbd6bf; }
+.ew-delivery-dialog .ew-button-quiet:hover { background:#eaf0df; }
+.ew-delivery-dialog .ew-icon-button { width:44px; height:44px; }
+.ew-delivery-dialog .ew-icon-button svg { width:22px; height:22px; }
+.ew-delivery-dialog > nav button { min-height:44px; border:0; background:none; }
+.ew-delivery-dialog :is(p,li) { overflow-wrap:anywhere; }
+.ew-delivery-dialog :is(input,textarea)::placeholder { color:#62725a; }
+.ew-delivery-dialog :is(input,textarea) { caret-color:#526e3d; }
+.ew-delivery-dialog ::selection { background:#d5e4c3; color:#283b32; }
+.ew-delivery-body { scrollbar-width:thin; scrollbar-color:#a5b594 #fcfcf8; }
+.ew-delivery-targets { padding-left:22px; }
+.ew-delivery-targets li { padding:8px 0; }
+.ew-delivery-messages { padding-left:22px; }
+.ew-delivery-messages p { white-space:pre-wrap; }
+.ew-delivery-records code { display:block; white-space:pre-wrap; overflow-wrap:anywhere; color:#43583c; background:transparent; }

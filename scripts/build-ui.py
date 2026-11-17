@@ -33,7 +33,7 @@ def load_copy():
     return dict(sorted(result.items()))
 
 
-def build(index, output, server_image=None, native_public=None):
+def build(index, output, server_image=None, native_public=None, offline_only=False):
     source_index = index.read_text()
     if 'data-edgestack-ui' in source_index:
         raise ValueError('Use the saved upstream index.html, not an already modified page.')
@@ -46,12 +46,13 @@ def build(index, output, server_image=None, native_public=None):
     core = (workspace / 'flow-core.js').read_text()
     workflow_template = (workspace / 'workspace.js').read_text()
     workflow_css = (workspace / 'workspace.css').read_bytes()
+    delivery_ui = (workspace / 'delivery-ui.js').read_text()
     catalog = json.loads((UI / 'catalog/apps.json').read_text())
     if catalog.get('schemaVersion') != 1 or not catalog.get('recipes'):
         raise ValueError('Invalid EdgeStack application catalog')
     catalog_payload = json.dumps(catalog, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
     payload = json.dumps(copy, ensure_ascii=False, separators=(',', ':')).replace('</', '<\\/')
-    seed = template.encode() + payload.encode() + css + core.encode() + workflow_template.encode() + workflow_css + catalog_payload.encode()
+    seed = template.encode() + payload.encode() + css + core.encode() + workflow_template.encode() + delivery_ui.encode() + workflow_css + catalog_payload.encode()
     for name in ['edgestack-logo.svg', 'edgestack-icon.svg']:
         seed += (UI / 'src' / name).read_bytes()
     version = digest(seed)[:12]
@@ -65,7 +66,7 @@ def build(index, output, server_image=None, native_public=None):
     workflow_name = f'edgestack-workspace.{version}.js'
     workflow_css_name = f'edgestack-workspace.{version}.css'
     (static / core_name).write_text(core)
-    (static / workflow_name).write_text(workflow_template.replace('__EDGESTACK_APP_CATALOG__', catalog_payload).replace('__EDGESTACK_VERSION__', version))
+    (static / workflow_name).write_text((delivery_ui + '\n' + workflow_template).replace('__EDGESTACK_APP_CATALOG__', catalog_payload).replace('__EDGESTACK_VERSION__', version))
     (static / workflow_css_name).write_bytes(workflow_css)
     for name in ['edgestack-logo.svg', 'edgestack-icon.svg']:
         (static / name).write_bytes((UI / 'src' / name).read_bytes())
@@ -94,7 +95,8 @@ def build(index, output, server_image=None, native_public=None):
         'brand': 'EdgeStack.io',
         'phrase_count': len(copy),
         'workspace': {'route': '#!/workspace', 'catalog_schema': catalog['schemaVersion'], 'recipes': [r['id'] for r in catalog['recipes']]},
-        'server_image': server_image or lock['images']['server']['reference'],
+        'server_image': None if offline_only else server_image or lock['images']['server']['reference'],
+        'offline_only': offline_only,
         'server_base_image': lock['images']['server']['reference'],
         'original_index_sha256': digest(source_index.encode()),
         'files': {str(p.relative_to(output)): digest(p.read_bytes()) for p in sorted(output.rglob('*')) if p.is_file() and p.name != 'manifest.json'},
@@ -102,7 +104,7 @@ def build(index, output, server_image=None, native_public=None):
     if native_public is not None:
         if (native_public / 'index.html').read_bytes() != index.read_bytes():
             raise ValueError('Native public directory must match the input index.html')
-        if not server_image:
+        if not server_image and not offline_only:
             raise ValueError('Bind a native frontend release to its immutable Server image')
         manifest['native_frontend'] = {
             'schemaVersion': 1,
@@ -119,10 +121,13 @@ if __name__ == '__main__':
     parser.add_argument('--index', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--server-image', help='Immutable custom Server image (sha256 ID or reference pinned by digest).')
+    parser.add_argument('--offline-only', action='store_true', help='Create a local demo build without asserting a compatible deployed Server image.')
     parser.add_argument('--native-public', type=Path, help='Newly compiled native public directory, included in the release hash manifest.')
     args = parser.parse_args()
+    if args.offline_only and args.server_image:
+        parser.error('--offline-only cannot bind a deployed Server image')
     if args.server_image and not re.fullmatch(r'(?:sha256:[0-9a-f]{64}|[^\s]+@sha256:[0-9a-f]{64})', args.server_image):
         parser.error('--server-image must be an immutable sha256 image reference')
     if args.output.exists() and any(args.output.iterdir()):
         parser.error('Output directory must be empty; use a new release directory.')
-    build(args.index, args.output, args.server_image, args.native_public)
+    build(args.index, args.output, args.server_image, args.native_public, args.offline_only)

@@ -91,6 +91,10 @@ func (s *Service) models(w http.ResponseWriter, r *http.Request) error {
 	if err := s.expireOperationsBackground(); err != nil {
 		return err
 	}
+	principal, principalErr := s.principal(r)
+	if principalErr != nil {
+		return principalErr
+	}
 	items := []ModelPackage{}
 	revision := 0
 	can := false
@@ -111,7 +115,7 @@ func (s *Service) models(w http.ResponseWriter, r *http.Request) error {
 		}
 		if s.opts.Dispatcher != nil && contains(task.Capabilities, "replace-model") {
 			for _, m := range rows {
-				if compatible(task, d, m) && s.policyAllows(tx, task, d, m) {
+				if compatible(task, d, m) && s.policyAllows(tx, task, d, m, principal) {
 					if _, e := s.opts.Dispatcher.Preview(r.Context(), task, m); e == nil {
 						items = append(items, m)
 					}
@@ -301,7 +305,7 @@ func (s *Service) changeModel(w http.ResponseWriter, r *http.Request) error {
 		respond(w, 200, op)
 		return nil
 	}
-	applyErr := s.opts.Dispatcher.Apply(r.Context(), task, model, preview.TargetVersion)
+	applyErr := s.opts.Dispatcher.Apply(WithDeliveryOperation(r.Context(), op.ID), task, model, preview.TargetVersion)
 	err = s.db.Update(func(tx *bolt.Tx) error {
 		// The dispatch was authorized before its side effect. Its outcome is
 		// system bookkeeping and must be recorded even if the caller loses

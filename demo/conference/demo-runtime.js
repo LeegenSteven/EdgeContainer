@@ -3,7 +3,9 @@
  */
 (function () {
   'use strict';
-  const KEY = 'edgestack.conference.v1';
+  const config = window.__EDGESTACK_DEMO_CONFIG__ || {};
+  const defaultPersona = config.defaultPersona === 'admin' ? 'admin' : 'user';
+  const KEY = config.storageKey || 'edgestack.conference.v1';
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const now = () => Math.floor(Date.now() / 1000);
   const iso = () => new Date().toISOString();
@@ -20,9 +22,9 @@
 
   function makeContainer(name, image, running = true, port = 0, index = 1) {
     const id = hex(5000 + index);
-    const network = name.includes('agent') ? 'edgestack-agent-mgmt' : name.includes('voice') ? 'demo-voice-rk3588_default' : 'edge_acceptance_default';
+    const network = name.includes('agent') ? 'edgestack-agent-mgmt' : name.includes('voice') ? 'ovs-rk3588_default' : 'edge_acceptance_default';
     const ports = port ? { '8080/tcp': [{ HostIp: '0.0.0.0', HostPort: String(port) }] } : {};
-    const project = name.includes('whoami') ? 'edge_acceptance' : name.includes('agent') ? 'edgestack-agent' : name.includes('voice') ? 'demo-voice-rk3588' : '';
+    const project = name.includes('whoami') ? 'edge_acceptance' : name.includes('agent') ? 'edgestack-agent' : name.includes('voice') ? 'ovs-rk3588' : '';
     const config = {
       Hostname: id.slice(0, 12), Domainname: '', User: '', AttachStdin: false,
       AttachStdout: true, AttachStderr: true, ExposedPorts: port ? { '8080/tcp': {} } : {},
@@ -33,7 +35,7 @@
       Labels: project ? { 'com.docker.compose.project': project, 'com.docker.compose.service': name.includes('whoami') ? 'whoami' : 'app', 'com.docker.compose.version': '5.7.0' } : {},
       StopSignal: 'SIGTERM',
     };
-    const mount = name.includes('voice') ? [{ Type: 'volume', Name: 'demo-voice-rk3588_speech-data', Source: '/var/lib/docker/volumes/demo-voice-rk3588_speech-data/_data', Destination: '/app/data', Driver: 'local', Mode: 'rw', RW: true, Propagation: '' }] : [];
+    const mount = name.includes('voice') ? [{ Type: 'volume', Name: 'ovs-rk3588_speech-data', Source: '/userdata/docker/volumes/ovs-rk3588_speech-data/_data', Destination: '/app/data', Driver: 'local', Mode: 'rw', RW: true, Propagation: '' }] : [];
     return {
       Id: id, Name: '/' + name, Names: ['/' + name], Created: new Date(Date.now() - 86400000).toISOString(),
       Image: hex(7000 + index), ImageID: hex(7000 + index), ImageName: image,
@@ -63,7 +65,7 @@
       OAuthLoginURI: '', OAuthLogoutURI: '', OAuthHideInternalAuth: false,
     };
     const environment = {
-      Id: 4, Name: 'rk3588-demo-01', Type: 4, URL: 'tcp://192.0.2.20:9001', GroupId: 1, PublicURL: '', Status: 1, TagIds: [],
+      Id: 4, Name: 'rk3588-aibox-01', Type: 4, URL: 'tcp://192.0.2.44:9001', GroupId: 1, PublicURL: '', Status: 1, TagIds: [],
       ComposeSyntaxMaxVersion: '3',
       TLSConfig: { TLS: false, TLSSkipVerify: true }, Kubernetes: { Configuration: { StorageClasses: [], IngressClasses: [], UseLoadBalancer: false, UseServerMetrics: false, AllowNoneIngressClass: true, IngressAvailabilityPerNamespace: false }, Flags: { IsServerIngressClassDetected: false, IsServerMetricsDetected: false, IsServerStorageDetected: false } },
       EdgeID: 'DEMO-EDGE-RK3588-01', EdgeKey: btoa('https://edgestack-demo.invalid:9443|edgestack-demo.invalid:8000|DEMO_NOT_A_REAL_SECRET|4'),
@@ -75,12 +77,12 @@
     const containers = [
       makeContainer('edge_acceptance-whoami-1', 'traefik/whoami:v1.10.3', true, 18080, 1),
       makeContainer('edgestack-edge-agent', 'portainer/agent:2.45.3', true, 0, 2),
-      makeContainer('demo-voice-rk3588', 'example.invalid/demo-voice:latest', true, 8621, 3),
+      makeContainer('openvoicestream-rk3588', 'seeed-local-voice:latest', true, 8621, 3),
       ...['hello-world-test', 'kernel-bench-test', 'python-test', 'voice-profile-old', 'nginx-test', 'rknn-test', 'camera-test', 'alpine-test'].map((n, i) => makeContainer(n, i === 4 ? 'nginx:alpine' : 'alpine:3.20', false, 0, i + 4)),
     ];
     const images = [...new Set(containers.map((c) => c.Config.Image))].map((tag, i) => ({ Id: 'sha256:' + hex(7000 + i + 1), ParentId: '', RepoTags: [tag], RepoDigests: [tag.split(':')[0] + '@sha256:' + hex(7000 + i + 1)], Created: now() - 86400 * (i + 1), Size: i === 2 ? 1048000000 : 10000000 + i * 17000000, SharedSize: -1, VirtualSize: 10000000, Labels: {}, Containers: i < 3 ? 1 : 0, used: i < 3 }));
-    const networks = ['bridge', 'host', 'none', 'edge_acceptance_default', 'edgestack-agent-mgmt', 'demo-voice-rk3588_default'].map((name, i) => ({ Id: hex(300 + i), Name: name, Created: iso(), Scope: 'local', Driver: name === 'host' ? 'host' : name === 'none' ? 'null' : 'bridge', EnableIPv4: true, EnableIPv6: false, IPAM: { Driver: 'default', Options: {}, Config: [{ Subnet: `172.${17 + i}.0.0/16`, Gateway: `172.${17 + i}.0.1` }] }, Internal: false, Attachable: false, Ingress: false, ConfigFrom: { Network: '' }, ConfigOnly: false, Containers: {}, Options: {}, Labels: name.includes('_') ? { 'com.docker.compose.project': name.split('_')[0] } : {}, Portainer: { ResourceControl: { ...rc(hex(300 + i), 5), System: i < 3, Public: i < 3 } } }));
-    const volumes = ['edgestack_agent_data', 'demo-voice-rk3588_speech-data', 'demo-voice-profile_speech-data'].map((name) => ({ Name: name, Driver: 'local', Mountpoint: '/var/lib/docker/volumes/' + name + '/_data', CreatedAt: iso(), Status: {}, Labels: { 'com.docker.compose.project': name.split('_')[0] }, Scope: 'local', Options: {}, UsageData: { Size: 10485760, RefCount: 1 }, Portainer: { ResourceControl: rc(name, 2) } }));
+    const networks = ['bridge', 'host', 'none', 'edge_acceptance_default', 'edgestack-agent-mgmt', 'ovs-rk3588_default'].map((name, i) => ({ Id: hex(300 + i), Name: name, Created: iso(), Scope: 'local', Driver: name === 'host' ? 'host' : name === 'none' ? 'null' : 'bridge', EnableIPv4: true, EnableIPv6: false, IPAM: { Driver: 'default', Options: {}, Config: [{ Subnet: `172.${17 + i}.0.0/16`, Gateway: `172.${17 + i}.0.1` }] }, Internal: false, Attachable: false, Ingress: false, ConfigFrom: { Network: '' }, ConfigOnly: false, Containers: {}, Options: {}, Labels: name.includes('_') ? { 'com.docker.compose.project': name.split('_')[0] } : {}, Portainer: { ResourceControl: { ...rc(hex(300 + i), 5), System: i < 3, Public: i < 3 } } }));
+    const volumes = ['edgestack_agent_data', 'ovs-rk3588_speech-data', 'ovs-profile_speech-data'].map((name) => ({ Name: name, Driver: 'local', Mountpoint: '/userdata/docker/volumes/' + name + '/_data', CreatedAt: iso(), Status: {}, Labels: { 'com.docker.compose.project': name.split('_')[0] }, Scope: 'local', Options: {}, UsageData: { Size: 10485760, RefCount: 1 }, Portainer: { ResourceControl: rc(name, 2) } }));
     const compose = 'services:\n  whoami:\n    image: traefik/whoami:v1.10.3\n    command: ["--port=8080", "--verbose"]\n    ports:\n      - "18080:8080"\n    restart: unless-stopped\n';
     return { schema: 1, loggedIn: true, serverOnline: true, boardOnline: true, cpu: 18, memory: 31,
       settings, environments: [environment], containers, images, networks, volumes, compose,
@@ -92,7 +94,7 @@
       stacks: [{ Id: 1, Name: 'edge_acceptance', Type: 2, EndpointId: 4, SwarmId: '', EntryPoint: 'docker-compose.yml', Env: [], Status: 1, CreationDate: now() - 3600, CreatedBy: 'admin', UpdateDate: 0, UpdatedBy: '', ProjectPath: '/data/compose/1', ResourceControl: rc('edge_acceptance', 6), AdditionalFiles: [] }],
       edge_jobs: [], registries: [], custom_templates: [], gitops_sources: [], gitops_workflows: [], notifications: [], webhooks: [], accessTokens: [],
       files: [{ Name: 'data', Dir: true, Size: 0, ModTime: now(), Parent: '/', Content: '' }, { Name: 'conference.log', Dir: false, Size: 96, ModTime: now(), Parent: '/', Content: 'EdgeStack.io meeting demo\nThis file is generated locally.\n' }],
-      audit: [{ time: iso(), action: '演示数据已就绪', target: 'Server + rk3588-demo-01' }],
+      audit: [{ time: iso(), action: '演示数据已就绪', target: 'Server + rk3588-aibox-01' }],
     };
   }
   let db;
@@ -100,8 +102,10 @@
   if (!db || db.schema !== 1) db = seed();
   function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* in-memory session remains usable */ } }
   const business=window.EdgeStackDemoBusiness.create({db,save,audit,jsonResponse});
-  if(!db.demoPersona)db.demoPersona='user';
+  if(!db.demoPersona)db.demoPersona=defaultPersona;
   if(!db.users.some(u=>u.Id===10001))db.users.push({...clone(db.users[0]),Id:10001,Username:'空间体验者',Role:2,RoleName:'Standard User',ThemeSettings:{color:'light'}});
+  const admin=window.EdgeStackDemoAdmin.create({db,save,audit,jsonResponse,business});
+  const delivery=window.EdgeStackDemoDelivery.create({db,save,jsonResponse,business});
   save();
   const currentUser=()=>db.demoPersona==='admin'?db.users[0]:db.users.find(u=>u.Id===10001);
   function audit(action, target) { db.audit.unshift({ time: iso(), action, target }); db.audit = db.audit.slice(0, 120); save(); }
@@ -109,7 +113,7 @@
 
   function dockerInfo() {
     return {
-      ID: 'DEMO-RK3588-DOCKER', Name: 'rk3588-demo', ServerVersion: '29.9.3', Containers: db.containers.length,
+      ID: 'DEMO-RK3588-DOCKER', Name: 'rk3588-aibox', ServerVersion: '29.9.3', Containers: db.containers.length,
       ContainersRunning: db.containers.filter((c) => c.State.Running).length, ContainersPaused: db.containers.filter((c) => c.State.Paused).length,
       ContainersStopped: db.containers.filter((c) => !c.State.Running).length, Images: db.images.length,
       Driver: 'overlayfs', DriverStatus: [['driver-type', 'io.containerd.snapshotter.v1']], Plugins: { Volume: ['local'], Network: ['bridge', 'host', 'ipvlan', 'macvlan', 'null', 'overlay'], Authorization: [], Log: ['json-file', 'local', 'syslog'] },
@@ -118,7 +122,7 @@
       SystemTime: iso(), LoggingDriver: 'json-file', CgroupDriver: 'systemd', CgroupVersion: '2', NEventsListener: 3,
       KernelVersion: '6.1.118', OperatingSystem: 'Debian GNU/Linux 12 (bookworm)', OSVersion: '12', OSType: 'linux', Architecture: 'aarch64', IndexServerAddress: 'https://index.docker.io/v1/',
       RegistryConfig: { IndexConfigs: { 'docker.io': { Name: 'docker.io', Mirrors: [], Secure: true, Official: true } }, Mirrors: [], InsecureRegistryCIDRs: [], AllowNondistributableArtifactsCIDRs: [], AllowNondistributableArtifactsHostnames: [] },
-      NCPU: 8, MemTotal: 16700000000, DockerRootDir: '/var/lib/docker', HttpProxy: '', HttpsProxy: '', NoProxy: '', Labels: [], ExperimentalBuild: false,
+      NCPU: 8, MemTotal: 16700000000, DockerRootDir: '/userdata/docker', HttpProxy: '', HttpsProxy: '', NoProxy: '', Labels: [], ExperimentalBuild: false,
       Swarm: { NodeID: '', NodeAddr: '', LocalNodeState: 'inactive', ControlAvailable: false, Error: '', RemoteManagers: [] },
       Runtimes: { runc: { path: 'runc', runtimeType: 'io.containerd.runc.v2' }, 'io.containerd.runc.v2': { path: 'runc', runtimeType: 'io.containerd.runc.v2' } }, DefaultRuntime: 'runc', LiveRestoreEnabled: false, Isolation: '', InitBinary: 'docker-init',
       ContainerdCommit: { ID: 'demo', Expected: 'demo' }, RuncCommit: { ID: 'demo', Expected: 'demo' }, InitCommit: { ID: 'demo', Expected: 'demo' }, SecurityOptions: ['name=seccomp,profile=builtin', 'name=cgroupns'], Warnings: [],
@@ -250,7 +254,7 @@
       return jsonResponse(n);
     }
     if (p === '/volumes') return jsonResponse({ Volumes: db.volumes, Warnings: [] });
-    if (p === '/volumes/create') { const v = { Name: body.Name || 'demo-volume-' + Date.now(), Driver: body.Driver || 'local', Mountpoint: '/var/lib/docker/volumes/' + body.Name + '/_data', CreatedAt: iso(), Labels: body.Labels || {}, Scope: 'local', Options: body.DriverOpts || {}, Status: {}, UsageData: { Size: 0, RefCount: 0 }, Portainer: { ResourceControl: rc(body.Name, 2) } }; db.volumes.push(v); audit('创建数据卷', v.Name); return jsonResponse(v, 201); }
+    if (p === '/volumes/create') { const v = { Name: body.Name || 'demo-volume-' + Date.now(), Driver: body.Driver || 'local', Mountpoint: '/userdata/docker/volumes/' + body.Name + '/_data', CreatedAt: iso(), Labels: body.Labels || {}, Scope: 'local', Options: body.DriverOpts || {}, Status: {}, UsageData: { Size: 0, RefCount: 0 }, Portainer: { ResourceControl: rc(body.Name, 2) } }; db.volumes.push(v); audit('创建数据卷', v.Name); return jsonResponse(v, 201); }
     if (p === '/volumes/prune') return jsonResponse({ VolumesDeleted: [], SpaceReclaimed: 0 });
     match = p.match(/^\/volumes\/(.+)$/);
     if (match) {
@@ -313,6 +317,8 @@
     else if (path.startsWith('/api')) path = path.slice(4);
     if (path.includes('/locales/')) return jsonResponse({});
     if (!path.startsWith('/')) path = '/' + path;
+    const deliveryResponse=delivery.route(method,path,q,body);if(deliveryResponse)return deliveryResponse;
+    const adminResponse=admin.route(method,path,q,body);if(adminResponse)return adminResponse;
     const businessResponse=business.route(method,path,q,body);if(businessResponse)return businessResponse;
     if (path === '/motd') return jsonResponse({ Title: '', Message: '', Content: '', Hash: 'demo', Style: '', Dismissible: true });
     if (path === '/status' || path === '/system/status') return jsonResponse({ Edition: 'CE', Version: '2.45.3', InstanceID: 'EDGESTACK-CONFERENCE-LOCAL', Snapshot: false });
@@ -340,7 +346,7 @@
     if (path === '/endpoints/summary') return jsonResponse({ total: db.environments.length, up: db.boardOnline ? db.environments.length : 0, down: db.boardOnline ? 0 : db.environments.length, outdated: 0, unassigned: db.environments.filter((e) => e.GroupId === 1).length, byGroup: [{ groupName: 'Unassigned', groupID: 1, count: db.environments.length }], byPlatformType: { docker: db.environments.length, kubernetes: 0, podman: 0, azure: 0 }, byHealth: { down: db.boardOnline ? 0 : 1, up: 0, heartbeat: db.boardOnline ? 1 : 0, outdated: 0 } });
     if (path === '/endpoints/agent_versions') return jsonResponse(['2.45.3']);
     if (path === '/endpoints') {
-      if (method === 'POST') { const e = { ...clone(db.environments[0]), Id: Math.max(4, ...db.environments.map((x) => x.Id)) + 1, Name: body.Name || 'rk3588-demo-02', EdgeID: 'DEMO-EDGE-' + Date.now(), TagIds: [], EdgeKey: btoa('https://edgestack-demo.invalid:9443|edgestack-demo.invalid:8000|DEMO_NOT_A_REAL_SECRET|5') }; db.environments.push(e); audit('添加模拟环境', e.Name); return jsonResponse(e, 201); }
+      if (method === 'POST') { const e = { ...clone(db.environments[0]), Id: Math.max(4, ...db.environments.map((x) => x.Id)) + 1, Name: body.Name || 'rk3588-aibox-02', EdgeID: 'DEMO-EDGE-' + Date.now(), TagIds: [], EdgeKey: btoa('https://edgestack-demo.invalid:9443|edgestack-demo.invalid:8000|DEMO_NOT_A_REAL_SECRET|5') }; db.environments.push(e); audit('添加模拟环境', e.Name); return jsonResponse(e, 201); }
       let list = envs();
       const search = q.get('search') || q.get('nameFilter');
       if (search) list = list.filter((e) => e.Name.toLowerCase().includes(search.toLowerCase()));
@@ -414,6 +420,8 @@
       if (collection === 'teams' && action === 'memberships') return jsonResponse(db.memberships);
       return crud(collection, method, key, body);
     }
+    if (/^\/gitops\/(?:sources|workflows)\/summary$/.test(path)) return jsonResponse({ healthy: 0, error: 0, syncing: 0, paused: 0, unknown: 0 });
+    if (/^\/gitops\/(?:sources|workflows)$/.test(path)) return jsonResponse([], 200, { 'x-total-count': '0', 'x-total-available': '0' });
     if (path.includes('/gitops/')) return jsonResponse([]);
     return unknown(method, path, body);
   }
@@ -507,10 +515,10 @@
     return new Response([204, 205, 304].includes(r.status) ? null : r.text !== undefined ? r.text : JSON.stringify(r.data), { status: r.status, headers: r.headers });
   };
   class LocalWebSocket extends EventTarget {
-    constructor(url) { super(); this.url = url; this.readyState = 0; this.binaryType = 'arraybuffer'; this.protocol = ''; this.bufferedAmount = 0; this.command = ''; setTimeout(() => { this.readyState = 1; this._emit('open'); this._message('EdgeStack.io meeting console (local simulation)\r\nroot@rk3588-demo:~# '); }, 120); }
+    constructor(url) { super(); this.url = url; this.readyState = 0; this.binaryType = 'arraybuffer'; this.protocol = ''; this.bufferedAmount = 0; this.command = ''; setTimeout(() => { this.readyState = 1; this._emit('open'); this._message('EdgeStack.io meeting console (local simulation)\r\nroot@rk3588-aibox:~# '); }, 120); }
     _emit(name, data) { const e = name === 'message' ? new MessageEvent(name, { data }) : new Event(name); this.dispatchEvent(e); if (this['on' + name]) this['on' + name](e); }
     _message(s) { this._emit('message', this.binaryType === 'arraybuffer' ? new TextEncoder().encode(s).buffer : new Blob([s])); }
-    send(data) { const s = typeof data === 'string' ? data : new TextDecoder().decode(data); if (s.includes('\r') || s.includes('\n')) { const cmd = (this.command + s).trim(); this.command = ''; const answer = cmd === 'ls' ? 'data  docker-compose.yml  conference.log' : cmd === 'pwd' ? '/root' : cmd === 'hostname' ? 'rk3588-demo' : cmd.startsWith('docker ps') ? db.containers.filter((x) => x.State.Running).map((x) => x.Id.slice(0, 12) + '  ' + x.Config.Image + '  ' + x.Name.slice(1)).join('\r\n') : cmd.startsWith('echo ') ? cmd.slice(5) : cmd === 'date' ? new Date().toString() : cmd === 'help' ? 'Commands: ls, pwd, hostname, docker ps, date, echo, clear' : cmd === 'clear' ? '\x1b[2J\x1b[H' : cmd ? '已模拟执行：' + cmd : ''; this._message('\r\n' + answer + '\r\nroot@rk3588-demo:~# '); } else { this.command += s; this._message(s); } }
+    send(data) { const s = typeof data === 'string' ? data : new TextDecoder().decode(data); if (s.includes('\r') || s.includes('\n')) { const cmd = (this.command + s).trim(); this.command = ''; const answer = cmd === 'ls' ? 'data  docker-compose.yml  conference.log' : cmd === 'pwd' ? '/root' : cmd === 'hostname' ? 'rk3588-aibox' : cmd.startsWith('docker ps') ? db.containers.filter((x) => x.State.Running).map((x) => x.Id.slice(0, 12) + '  ' + x.Config.Image + '  ' + x.Name.slice(1)).join('\r\n') : cmd.startsWith('echo ') ? cmd.slice(5) : cmd === 'date' ? new Date().toString() : cmd === 'help' ? 'Commands: ls, pwd, hostname, docker ps, date, echo, clear' : cmd === 'clear' ? '\x1b[2J\x1b[H' : cmd ? '已模拟执行：' + cmd : ''; this._message('\r\n' + answer + '\r\nroot@rk3588-aibox:~# '); } else { this.command += s; this._message(s); } }
     close() { this.readyState = 3; this._emit('close'); }
   }
   Object.assign(LocalWebSocket, { CONNECTING: 0, OPEN: 1, CLOSING: 2, CLOSED: 3 });
@@ -521,13 +529,13 @@
     const link = event.target.closest?.('a[href]');
     if (!link) return;
     const href = link.getAttribute('href');
-    if (/^(?:https?:|mailto:)/.test(href)) { event.preventDefault(); event.stopPropagation(); showHelp(href); }
+    if (/^(?:https?:|mailto:)/.test(href) || /(?:voice-test|voice_test)/.test(href)) { event.preventDefault(); event.stopPropagation(); showHelp(href); }
   }, true);
 
   function showHelp(url) {
     const old = document.getElementById('demo-info'); if (old) old.remove();
     const box = document.createElement('div'); box.id = 'demo-info'; box.className = 'demo-overlay';
-    box.innerHTML = '<section class="demo-dialog"><button class="demo-close" aria-label="关闭帮助">×</button><h2>EdgeStack.io 演示说明</h2><p>当前文件内置中文管理界面和本地模拟的 Server、RK3588。所有操作会更新本次会议数据。</p><div class="demo-callout">用户空间：点击工作台查看任务、互动与模型；按需生成本地样例小结。<br>可在演示控制切换到原生管理员后台。<br>管理员路径：<br>首页 → 选择 RK3588 → 容器 → 日志 / 监控<br>边缘分组 → home-workers → 环境成员<br>边缘应用栈 → 添加应用栈 → 编辑 Compose → 部署</div><p class="demo-muted">外部链接</p><code></code><p>会议使用说明见同目录的「交互文档.md」。服务端和板卡连接状态可在右下角「演示控制」中切换。</p></section>';
+    box.innerHTML = '<section class="demo-dialog"><button class="demo-close" aria-label="关闭帮助">×</button><h2>EdgeStack.io 演示说明</h2><p>当前文件内置中文管理界面与本地虚构设备。登记和模型候选与用户空间共享数据，刷新保留；不连接真机、云服务或麦克风。</p><div class="demo-callout">用户空间：点击工作台查看任务、互动与模型；按需生成本地样例小结。<br>可在演示控制切换用户空间与管理后台。<br>业务管理：设备、任务、授权、来源与凭据、模型、操作与审计、云端设置。Key 仅作本地模拟，原文不保存；DEMO_INVALID_KEY 模拟验证失败。<br>管理员路径：<br>首页 → 选择 RK3588 → 容器 → 日志 / 监控<br>边缘分组 → home-workers → 环境成员<br>边缘应用栈 → 添加应用栈 → 编辑 Compose → 部署</div><p class="demo-muted">外部链接</p><code></code><p>会议使用说明见同目录的「交互文档.md」。服务端和板卡连接状态可在右下角「演示控制」中切换。</p></section>';
     box.querySelector('code').textContent = String(url || '本地会议演示');
     box.querySelector('button').onclick = () => box.remove(); box.onclick = (e) => { if (e.target === box) box.remove(); };
     document.body.append(box);
@@ -535,7 +543,7 @@
   function download(name, content, type = 'application/json') { const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([content], { type })); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 1000); }
   function controls() {
     const box = document.createElement('div'); box.id = 'demo-tools';
-    box.innerHTML = '<button id="demo-toggle" aria-expanded="false">● 会议演示 <span>本地模拟</span></button><section id="demo-panel" hidden><header><strong>演示控制</strong><button id="demo-close-panel" aria-label="关闭演示控制">×</button></header><p class="demo-muted">Server · Windows / WSL<br>Worker · RK3588 / Debian 12 ARM64</p><label>RK3588 连接状态 <select id="demo-board"><option value="1">在线 · 心跳正常</option><option value="0">离线 · 业务容器继续运行</option></select></label><label>CPU 使用率 <input id="demo-cpu" type="range" min="1" max="95"><output id="demo-cpu-value"></output></label><div class="demo-actions"><button data-persona="user">用户空间</button><button data-persona="admin">管理后台</button><button data-route="/home">首页</button><button data-route="/4/docker/host">主机</button><button data-route="/4/docker/containers">容器</button><button data-route="/edge/groups">分组</button><button data-route="/edge/stacks">边缘应用栈</button></div><button id="demo-voice-event">模拟新语音互动</button><button id="demo-camera-event">模拟新视觉互动</button><button id="demo-help">交互帮助</button><button id="demo-export">导出会议数据</button><button id="demo-audit">查看操作记录</button><button id="demo-reset" class="demo-danger">恢复初始演示数据</button><p class="demo-muted">原生界面和交互保留。页面中的服务、设备、账户和凭据均为会议示例。</p></section>';
+    box.innerHTML = '<button id="demo-toggle" aria-expanded="false">● 会议演示 <span>本地模拟</span></button><section id="demo-panel" hidden><header><strong>演示控制</strong><button id="demo-close-panel" aria-label="关闭演示控制">×</button></header><p class="demo-muted">Server · Windows / WSL<br>Worker · RK3588 / Debian 12 ARM64</p><label>RK3588 连接状态 <select id="demo-board"><option value="1">在线 · 心跳正常</option><option value="0">离线 · 业务容器继续运行</option></select></label><label>CPU 使用率 <input id="demo-cpu" type="range" min="1" max="95"><output id="demo-cpu-value"></output></label><div class="demo-actions"><button data-persona="user">用户空间</button><button data-persona="admin">管理后台</button><button data-route="/home">首页</button><button data-route="/business/devices">业务管理</button><button data-route="/4/docker/host">主机</button><button data-route="/4/docker/containers">容器</button><button data-route="/edge/groups">分组</button><button data-route="/edge/stacks">边缘应用栈</button></div><button id="demo-voice-event">模拟新语音互动</button><button id="demo-camera-event">模拟新视觉互动</button><button id="demo-help">交互帮助</button><button id="demo-export">导出会议数据</button><button id="demo-audit">查看操作记录</button><button id="demo-reset" class="demo-danger">恢复初始演示数据</button><p class="demo-muted">页面中的设备、账户、凭据、验证回执均为本地虚构示例。Key 原文不保存；不请求真机、云端或麦克风。</p></section>';
     document.body.append(box);
     const panel = box.querySelector('#demo-panel'), toggle = box.querySelector('#demo-toggle');
     const close = () => { panel.hidden = true; toggle.setAttribute('aria-expanded', 'false'); };
@@ -552,11 +560,16 @@
     box.querySelector('#demo-help').onclick = () => showHelp('本地交互文档');
     box.querySelector('#demo-export').onclick = () => download('EdgeStack-会议数据.json', JSON.stringify(db, null, 2));
     box.querySelector('#demo-audit').onclick = () => { showHelp('本次会议操作记录'); const block = document.querySelector('#demo-info code'); block.textContent = db.audit.map((x) => new Date(x.time).toLocaleTimeString('zh-CN') + '  ' + x.action + ' · ' + x.target).join('\n'); };
-    box.querySelector('#demo-reset').onclick = () => { if (confirm('恢复初始演示数据？本文件中的会议操作将被清除。')) { db = seed(); db.demoPersona='user'; db.demoBusiness=window.EdgeStackDemoBusiness.seed(); try { for (const key of Object.keys(localStorage)) if (key.startsWith('portainer.') || key.startsWith('edgestack.conference.')) localStorage.removeItem(key); } catch {} save(); location.hash = '#!/workspace?view=space'; location.reload(); } };
+    box.querySelector('#demo-reset').onclick = () => { if (confirm('恢复初始演示数据？只清除此演示文件的本地修改。')) reset(); };
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); document.getElementById('demo-info')?.remove(); } });
   }
-  window.EdgeStackDemo = { version: 2, fixture:true, emitDemoEvent:business.emitDemoEvent, requests, getState: () => clone(db), reset() { db = seed(); db.demoPersona='user'; db.demoBusiness=window.EdgeStackDemoBusiness.seed(); save(); location.reload(); }, route };
-  if (!location.hash || location.hash === '#') location.hash = '#!/workspace?view=space';
+  function reset() {
+    try { for (const key of Object.keys(localStorage)) if (key === KEY || key.startsWith('portainer.')) localStorage.removeItem(key); } catch {}
+    db=seed();db.demoPersona=defaultPersona;db.demoBusiness=window.EdgeStackDemoBusiness.seed();save();
+    location.hash=defaultPersona==='admin'?'#!/home':'#!/workspace?view=space';location.reload();
+  }
+  window.EdgeStackDemo = { version:3, fixture:true, storageKey:KEY, defaultPersona, emitDemoEvent:business.emitDemoEvent, requests, getState:()=>clone(db), reset, route };
+  if (!location.hash || location.hash === '#') location.hash=defaultPersona==='admin'?'#!/home':'#!/workspace?view=space';
   document.documentElement.lang = 'zh-CN';
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', controls, { once: true }); else controls();
   setInterval(() => { if (db.boardOnline) db.environments.forEach((e) => { e.LastCheckInDate = now(); e.Heartbeat = true; }); }, 5000);

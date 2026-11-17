@@ -79,10 +79,6 @@ func (handler *Handler) endpointEdgeStatusInspect(w http.ResponseWriter, r *http
 		return httperror.BadRequest("Invalid environment identifier route variable", err)
 	}
 
-	if cachedResp := handler.respondFromCache(w, r, portainer.EndpointID(endpointID)); cachedResp {
-		return nil
-	}
-
 	if _, ok := handler.DataStore.Endpoint().Heartbeat(portainer.EndpointID(endpointID)); !ok {
 		// EE-5190
 		return httperror.Forbidden("Permission denied to access environment. The device has not been trusted yet", fmt.Errorf("unable to retrieve endpoint heartbeat. Environment ID: %d", endpointID))
@@ -100,6 +96,14 @@ func (handler *Handler) endpointEdgeStatusInspect(w http.ResponseWriter, r *http
 		return httperror.Forbidden("Permission denied to access environment. The device has not been trusted yet", fmt.Errorf("unauthorized Edge endpoint operation: %w. Environment ID: %d", err, endpoint.ID))
 	}
 
+	if handler.ExecutionCapability != nil {
+		if err := handler.ExecutionCapability(r.Context(), int(endpoint.ID), r.Header.Get("X-EdgeStack-Execution-Grants")); err != nil {
+			return httperror.InternalServerError("Execution registry unavailable", err)
+		}
+	}
+	if cachedResp := handler.respondFromCache(w, r, portainer.EndpointID(endpointID)); cachedResp {
+		return nil
+	}
 	handler.DataStore.Endpoint().UpdateHeartbeat(endpoint.ID)
 
 	if err := handler.requestBouncer.TrustedEdgeEnvironmentAccess(handler.DataStore, endpoint); err != nil {

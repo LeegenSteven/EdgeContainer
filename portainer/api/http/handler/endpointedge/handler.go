@@ -1,6 +1,8 @@
 package endpointedge
 
 import (
+	"context"
+	"github.com/portainer/portainer/api/edge"
 	"net/http"
 
 	portainer "github.com/portainer/portainer/api"
@@ -19,6 +21,9 @@ type Handler struct {
 	DataStore            dataservices.DataStore
 	FileService          portainer.FileService
 	ReverseTunnelService portainer.ReverseTunnelService
+	ExecutionPayload     func(context.Context, int, int) (bool, *edge.ExecutionGrant, error)
+	ExecutionCapability  func(context.Context, int, string) error
+	ExecutionVerify      http.Handler
 }
 
 // NewHandler creates a handler to manage environment(endpoint) operations.
@@ -31,6 +36,13 @@ func NewHandler(bouncer security.BouncerService, dataStore dataservices.DataStor
 		ReverseTunnelService: reverseTunnelService,
 	}
 
+	h.HandleFunc("/api/endpoints/{id}/edge/stacks/{stackId}/execution/verify", func(w http.ResponseWriter, r *http.Request) {
+		if h.ExecutionVerify == nil {
+			http.Error(w, "execution_authority_unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		h.ExecutionVerify.ServeHTTP(w, r)
+	}).Methods(http.MethodPost)
 	h.Handle("/api/endpoints/{id}/edge/status", bouncer.PublicAccess(httperror.LoggerHandler(h.endpointEdgeStatusInspect))).Methods(http.MethodGet)
 
 	endpointRouter := h.PathPrefix("/api/endpoints/{id}").Subrouter()

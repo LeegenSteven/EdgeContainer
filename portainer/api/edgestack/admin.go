@@ -90,7 +90,10 @@ func (s *Service) modelAdmin(tx *bolt.Tx, m ModelPackage) map[string]any {
 func scopeFor(task Task, device Device) PublicationScope {
 	return PublicationScope{TaskKind: task.Kind, Architecture: device.Architecture, RuntimeBackend: task.RuntimeBackend, TemplateID: task.TemplateID}
 }
-func (s *Service) policyAllows(tx *bolt.Tx, task Task, device Device, model ModelPackage) bool {
+func (s *Service) policyAllows(tx *bolt.Tx, task Task, device Device, model ModelPackage, principal Principal) bool {
+	if !s.deliveryArtifactAllows(tx, task, device, model, principal) {
+		return false
+	}
 	p := s.modelPolicy(tx, model.ID)
 	if p.LegacyScoped && contains(p.AllowedTaskIDs, task.ID) {
 		if scope, ok := p.LegacyTaskScopes[task.ID]; ok && scope == scopeFor(task, device) {

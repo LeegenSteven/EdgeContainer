@@ -109,7 +109,19 @@ func (handler *Handler) endpointEdgeStackInspect(w http.ResponseWriter, r *http.
 
 	dirEntries = filesystem.FilterDirForEntryFile(dirEntries, fileName)
 
+	var managed bool
+	var grant *edge.ExecutionGrant
+	if handler.ExecutionPayload != nil {
+		managed, grant, err = handler.ExecutionPayload(r.Context(), int(endpoint.ID), int(edgeStack.ID))
+		if err != nil {
+			return httperror.Conflict("Managed execution is waiting for authority", err)
+		}
+		if managed && r.Header.Get(edge.ExecutionGrantsHeader) != edge.ExecutionGrantsCapability {
+			return httperror.Forbidden("Execution capable Edge agent required", nil)
+		}
+	}
 	return response.JSON(w, edge.StackPayload{
+		ID: int(edgeStack.ID), Version: edgeStack.Version, ManagedExecution: managed, ExecutionGrant: grant,
 		DirEntries:       dirEntries,
 		EntryFileName:    fileName,
 		StackFileContent: fileContent,

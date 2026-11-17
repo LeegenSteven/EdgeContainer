@@ -201,6 +201,7 @@ func (client *PortainerEdgeClient) GetEnvironmentStatus(flags ...string) (*PollS
 	req.Header.Set("If-None-Match", client.cacheHeaders())
 
 	req.Header.Set(agent.HTTPResponseAgentHeaderName, client.version)
+	req.Header.Set(edge.ExecutionGrantsHeader, edge.ExecutionGrantsCapability)
 	req.Header.Set(agent.HTTPEdgeIdentifierHeaderName, client.edgeID)
 
 	timeZone := time.Local.String()
@@ -273,6 +274,7 @@ func (client *PortainerEdgeClient) GetEdgeStackConfig(edgeStackID int, version *
 	}
 
 	req.Header.Set(agent.HTTPEdgeIdentifierHeaderName, client.edgeID)
+	req.Header.Set(edge.ExecutionGrantsHeader, edge.ExecutionGrantsCapability)
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {

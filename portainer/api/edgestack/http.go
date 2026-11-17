@@ -116,10 +116,14 @@ func (s *Service) Handler() http.Handler {
 	// session, API key, EDGE_KEY or a browser cookie.
 	r.Handle("/api/edgestack/ingest/events", route(s.ingestEvents)).Methods("POST")
 	r.Handle("/api/edgestack/ingest/status", route(s.ingestStatus)).Methods("POST")
+	s.deliveryRoutes(r, add)
 	return r
 }
 
 func (s *Service) principal(r *http.Request) (Principal, error) {
+	if p, ok := DeliveryPrincipal(r); ok {
+		return p, nil
+	}
 	if s.opts.Authenticate == nil {
 		return Principal{}, fail(401, "authentication_required")
 	}

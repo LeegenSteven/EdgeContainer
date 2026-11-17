@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docker/docker/api/types/container"
 	"github.com/portainer/portainer/api/edgestack"
 )
 
@@ -40,5 +41,26 @@ func TestModelValidationChecksActualImageAndApprovedParameters(t *testing.T) {
 func TestMissingRuntimeProviderCannotValidateModelImage(t *testing.T) {
 	if modelRuntimeVerifier(nil)(context.Background(), edgestack.Task{}, edgestack.ModelPackage{}) == nil {
 		t.Fatal("missing inspect provider allowed model validation")
+	}
+}
+
+func TestDeliveryHealthRequiresActualDockerHealth(t *testing.T) {
+	provider, client, task := mountFixture()
+	image := "example.invalid/model@sha256:" + strings.Repeat("a", 64)
+	client.actual.Config.Image = image
+	model := edgestack.ModelPackage{Image: image}
+	observe := deliveryHealthObserver(provider)
+	if err := observe(context.Background(), task, model); err == nil {
+		t.Fatal("running container without health evidence passed")
+	}
+	client.actual.State.Health = &container.Health{Status: "healthy"}
+	task.Revision++
+	if err := observe(context.Background(), task, model); err != nil {
+		t.Fatal(err)
+	}
+	client.actual.State.Health.Status = "unhealthy"
+	task.Revision++
+	if err := observe(context.Background(), task, model); err == nil {
+		t.Fatal("unhealthy inference runtime passed")
 	}
 }

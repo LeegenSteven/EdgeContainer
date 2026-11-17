@@ -1,0 +1,14 @@
+{
+  "schemaVersion": 1,
+  "minimumQuality": 0.99,
+  "samples": [
+    {
+      "input": "input.npy",
+      "inputSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "reference": "reference.npz",
+      "referenceSha256": "sha256:0000000000000000000000000000000000000000000000000000000000000000",
+      "rtol": 0.02,
+      "atol": 0.0001
+    }
+  ]
+}

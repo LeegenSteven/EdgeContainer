@@ -37,6 +37,7 @@ type observedMount struct {
 }
 type mountSnapshot struct {
 	mounts           []observedMount
+	healthy          bool
 	image            string
 	modelEnvironment map[string]string
 	observedAt       time.Time
@@ -267,7 +268,7 @@ func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountS
 	if ctx.Err() != nil {
 		return mountSnapshot{reason: "mount_query_timeout"}
 	}
-	result := mountSnapshot{observedAt: p.now().UTC(), image: actual.Config.Image, modelEnvironment: make(map[string]string), mounts: make([]observedMount, 0, len(actual.Mounts))}
+	result := mountSnapshot{healthy: actual.State.Health != nil && actual.State.Health.Status == "healthy", observedAt: p.now().UTC(), image: actual.Config.Image, modelEnvironment: make(map[string]string), mounts: make([]observedMount, 0, len(actual.Mounts))}
 	for _, item := range actual.Config.Env {
 		key, value, found := strings.Cut(item, "=")
 		if !found {
@@ -290,4 +291,25 @@ func mountErrorReason(ctx context.Context) string {
 		return "mount_query_timeout"
 	}
 	return "mount_query_unavailable"
+}
+
+// Rollout observation requires both the immutable model image and a healthy
+// Docker health check. Runtime model receipts are verified separately by the
+// business operation; a running process alone does not pass this gate.
+func deliveryHealthObserver(provider edgestack.MountProvider) func(context.Context, edgestack.Task, edgestack.ModelPackage) error {
+	p, ok := provider.(*mountProvider)
+	if !ok {
+		return nil
+	}
+	verify := modelRuntimeVerifier(provider)
+	return func(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage) error {
+		if err := verify(ctx, task, model); err != nil {
+			return err
+		}
+		snapshot := p.snapshot(ctx, task)
+		if !snapshot.healthy {
+			return errors.New("runtime_health_unconfirmed")
+		}
+		return nil
+	}
 }
