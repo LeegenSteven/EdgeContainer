@@ -91,6 +91,18 @@ def character_quality(actual, expected):
 
 class YoloRuntime:
     def __init__(self, config):
+        source = config.get('deviceTreeFile') or os.environ.get('RKNN_DEVICE_TREE_FILE')
+        self.device_tree_receipt = None
+        # Native Linux keeps the SDK's real /proc entry unchanged. Containers
+        # must present a physical read-only sysfs mount to the existing adapter.
+        # That adapter never replaces SoC detection or device availability checks.
+        if source or not Path('/proc/device-tree/compatible').is_file():
+            from rk_device_tree import install
+            try:
+                self.device_tree_receipt = install(source or '/run/edgestack-device-tree/compatible')
+            except (OSError, ValueError) as error:
+                raise DeliveryError('runtime_device_tree_unverified',
+                                    'Mount the real RK3588 device tree read-only before initializing RKNN') from error
         from rknnlite.api import RKNNLite
         self.config, self.native, self.initialized = config, RKNNLite(), False
         self.model_hash, self.inferences, self.last_inference = None, 0, None

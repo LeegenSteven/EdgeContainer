@@ -15,6 +15,7 @@ from urllib.request import ProxyHandler, Request, build_opener
 from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+sys.path.insert(0, str(Path(__file__).resolve().parents[2] / 'business-events'))
 from common import DeliveryError, canonical, digest, file_digest
 from runtime_service import (AsrRuntime, RuntimeService, YoloRuntime, character_quality,
                              checked_file, handler, measured_profile)
@@ -213,8 +214,11 @@ class RuntimeTests(unittest.TestCase):
         native = mock.Mock()
         module = types.ModuleType('rknnlite.api')
         module.RKNNLite = lambda: native
-        with mock.patch.dict(sys.modules, {'rknnlite': types.ModuleType('rknnlite'), 'rknnlite.api': module}):
-            runtime = YoloRuntime({'modelPath': str(self.model), 'modelId': 'candidate'})
+        with mock.patch.dict(sys.modules, {'rknnlite': types.ModuleType('rknnlite'), 'rknnlite.api': module}), \
+                mock.patch('rk_device_tree.install', return_value={'path': '/physical-fixture', 'sha256': 'fixture'}) as install:
+            runtime = YoloRuntime({'modelPath': str(self.model), 'modelId': 'candidate',
+                                   'deviceTreeFile': '/run/edgestack-device-tree/compatible'})
+            install.assert_called_once_with('/run/edgestack-device-tree/compatible')
             native.load_rknn.return_value = 1
             with self.assertRaises(DeliveryError):
                 runtime.start()
@@ -224,6 +228,28 @@ class RuntimeTests(unittest.TestCase):
             with self.assertRaises(DeliveryError):
                 runtime.start()
             self.assertFalse(runtime.initialized)
+
+    def test_yolo_copied_identity_file_is_rejected_before_constructing_rknn(self):
+        # Matching bytes alone never stand in for a read-only physical sysfs mount.
+        copied = self.root / 'copied-compatible'
+        copied.write_bytes(b'rockchip,aibox-pro-3588jd4\x00rockchip,rk3588\x00')
+        module = types.ModuleType('rknnlite.api')
+        module.RKNNLite = mock.Mock()
+        with mock.patch.dict(sys.modules, {'rknnlite': types.ModuleType('rknnlite'), 'rknnlite.api': module}):
+            with self.assertRaisesRegex(DeliveryError, 'real RK3588 device tree'):
+                YoloRuntime({'modelPath': str(self.model), 'modelId': 'candidate', 'deviceTreeFile': str(copied)})
+        module.RKNNLite.assert_not_called()
+
+    def test_yolo_native_proc_entry_preserves_original_sdk_detection(self):
+        module = types.ModuleType('rknnlite.api')
+        module.RKNNLite = mock.Mock()
+        with mock.patch.dict(sys.modules, {'rknnlite': types.ModuleType('rknnlite'), 'rknnlite.api': module}), \
+                mock.patch.dict(os.environ, {'RKNN_DEVICE_TREE_FILE': ''}), \
+                mock.patch('runtime_service.Path.is_file', return_value=True), \
+                mock.patch('rk_device_tree.install') as install:
+            YoloRuntime({'modelPath': str(self.model), 'modelId': 'candidate'})
+        install.assert_not_called()
+        module.RKNNLite.assert_called_once_with()
 
     def test_asr_reuses_approved_transport_secret_and_bind_without_launching_a_real_service(self):
         token = self.root / 'existing-transport.token'

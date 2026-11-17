@@ -4,6 +4,7 @@
   "port": 18622,
   "modelPath": "/opt/edgestack/models/model.rknn",
   "slot": "vision",
+  "deviceTreeFile": "/run/edgestack-device-tree/compatible",
   "profileManifest": "/opt/edgestack/runtime-profile.json",
   "workloadManifest": "/opt/edgestack/workloads/yolo/manifest.json"
 }

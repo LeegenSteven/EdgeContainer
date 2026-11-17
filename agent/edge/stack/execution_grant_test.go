@@ -9,10 +9,13 @@ import (
 	"testing"
 	"time"
 
+	"github.com/docker/cli/cli/command"
+	dockerconfig "github.com/docker/cli/cli/config"
 	"github.com/portainer/agent/deployer"
 	"github.com/portainer/agent/edge/client"
 	"github.com/portainer/agent/internals/mocks"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 	"github.com/stretchr/testify/require"
 	"go.uber.org/mock/gomock"
 )
@@ -109,6 +112,42 @@ func TestManagedDeploymentCancelsWhenAuthorityIsLost(t *testing.T) {
 	stack := executionTestStack()
 	manager.deployStack(t.Context(), stack, "edge_managed", "stack.yml")
 	require.Equal(t, StatusError, stack.Status)
+	require.GreaterOrEqual(t, checks.Load(), int32(2))
+}
+
+func TestManagedExecutionCancellationReachesDockerCli(t *testing.T) {
+	directory := t.TempDir()
+	previous := dockerconfig.Dir()
+	t.Setenv("DOCKER_CONFIG", directory)
+	t.Setenv("DOCKER_CONTEXT", "")
+	t.Setenv("DOCKER_TLS_VERIFY", "")
+	t.Setenv("DOCKER_CERT_PATH", "")
+	dockerconfig.SetDir(directory)
+	t.Cleanup(func() { dockerconfig.SetDir(previous) })
+	var checks atomic.Int32
+	manager := &StackManager{engineType: EngineTypeDockerStandalone, executionFences: &executionFenceStore{}, portainerClient: executionTestClient{verify: func(context.Context, int, int, string, edge.ExecutionGrant) error {
+		if checks.Add(1) > 1 {
+			return errors.New("revoked_fence")
+		}
+		return nil
+	}}}
+	ctx, complete, err := manager.managedExecutionContext(t.Context(), executionTestStack(), "deploy")
+	require.NoError(t, err)
+	// Initialize the real Docker CLI, without making an engine request. This
+	// catches a context reset below the mocked-deployer boundary.
+	err = libstack.WithCli(ctx, libstack.DockerCliOptions{Host: "tcp://127.0.0.1:1"}, func(actual context.Context, _ *command.DockerCli) error {
+		select {
+		case <-actual.Done():
+			require.ErrorContains(t, context.Cause(actual), "revoked_fence")
+			return actual.Err()
+		case <-time.After(5 * time.Second):
+			t.Error("actual Docker CLI callback lost managed cancellation")
+			return errors.New("cancellation_timeout")
+		}
+	})
+	err = complete(err)
+	require.ErrorIs(t, err, context.Canceled)
+	require.ErrorContains(t, err, "revoked_fence")
 	require.GreaterOrEqual(t, checks.Load(), int32(2))
 }
 

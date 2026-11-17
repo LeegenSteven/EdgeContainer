@@ -13,6 +13,7 @@ import (
 
 	"github.com/portainer/agent/edge/client"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 )
 
 type managedTarget struct {
@@ -245,7 +246,7 @@ func (manager *StackManager) managedExecutionContext(ctx context.Context, stack 
 			}
 		}
 	}()
-	return guarded, func(result error) error {
+	return libstack.WithExecutionContext(guarded), func(result error) error {
 		cause := context.Cause(guarded)
 		cancel(context.Canceled)
 		<-done

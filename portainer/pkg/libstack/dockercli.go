@@ -27,14 +27,25 @@ type DockerCliOptions struct {
 // swarm) to prevent concurrent initialisation of the Docker client config.
 var mu sync.Mutex
 
+type executionContextKey struct{}
+
+// WithExecutionContext opts a managed execution into preserving cancellation,
+// deadlines and values through WithCli. Unmarked callers retain its legacy
+// background context behavior.
+func WithExecutionContext(ctx context.Context) context.Context {
+	return context.WithValue(ctx, executionContextKey{}, true)
+}
+
 // WithCli creates and initialises a DockerCli, injects registry credentials,
 // and calls cliFn with the ready client. The client is closed after cliFn returns.
 func WithCli(
-	ctx context.Context, //nolint:staticcheck
+	ctx context.Context,
 	options DockerCliOptions,
 	cliFn func(context.Context, *command.DockerCli) error,
 ) error {
-	ctx = context.Background() //nolint:staticcheck
+	if ctx == nil || ctx.Value(executionContextKey{}) != true {
+		ctx = context.Background()
+	}
 
 	cli, err := command.NewDockerCli(command.WithCombinedStreams(log.Logger))
 	if err != nil {
