@@ -1,4 +1,5 @@
 import hashlib
+from datetime import datetime, timezone
 import io
 import json
 import os
@@ -17,7 +18,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from artifacts import (ImageBuilder, export_bundle, fetch_source, inspect_oci,
                        recipe_context_digest, runtime_bundle_digest, verify_bundle)
 from common import ApiError, Commands, DeliveryError, Journal, JsonClient, TransportError, canonical, digest, file_digest
-from delivery_worker import AgentDP, ClaimGuard, Worker, validate_probe
+from delivery_worker import AgentDP, ClaimGuard, Worker, timestamp, validate_probe
 
 
 class Guard:
@@ -60,6 +61,55 @@ def make_oci(path, architecture='arm64', corrupt=False):
             member.size = len(body)
             archive.addfile(member, io.BytesIO(body))
     return manifest['digest']
+
+
+class TimestampTests(unittest.TestCase):
+    def test_go_rfc3339nano_actual_failed_claim_and_fraction_lengths(self):
+        base = '2026-11-18T10:55:56'
+        fraction = '386140646'
+        for length in range(1, 10):
+            with self.subTest(fraction_digits=length):
+                digits = fraction[:length]
+                expected = datetime(2026, 11, 18, 10, 55, 56,
+                                    int(digits[:6].ljust(6, '0')), timezone.utc).timestamp()
+                self.assertEqual(timestamp(base + '.' + digits + 'Z'), expected)
+        self.assertEqual(timestamp(base + 'Z'),
+                         datetime(2026, 11, 18, 10, 55, 56, tzinfo=timezone.utc).timestamp())
+
+    def test_timestamp_offsets_and_submicroseconds_never_round_up(self):
+        expected = datetime(2026, 11, 18, 10, 55, 56, 386140, timezone.utc).timestamp()
+        self.assertEqual(timestamp('2026-11-18T18:55:56.386140646+08:00'), expected)
+        self.assertEqual(timestamp('2026-11-18T07:25:56.386140646-03:30'), expected)
+        almost_next_second = timestamp('2026-11-18T10:55:56.999999999Z')
+        self.assertEqual(almost_next_second,
+                         datetime(2026, 11, 18, 10, 55, 56, 999999, timezone.utc).timestamp())
+        self.assertLess(almost_next_second, timestamp('2026-11-18T10:55:57Z'))
+
+    def test_timestamp_requires_timezone_and_rejects_invalid_values(self):
+        for value in (None, 123, '', '2026-11-18', '2026-11-18T10:55:56',
+                      '2026-11-18T10:55:56.386140646', '2026-11-18 10:55:56Z',
+                      '2026-02-30T10:55:56Z', '2026-11-18T24:55:56Z',
+                      '2026-11-18T10:55:60Z', '2026-11-18T10:55:56.Z',
+                      '2026-11-18T10:55:56.1234567890Z',
+                      '2026-11-18T10:55:56+24:00', '2026-11-18T10:55:56+00:60',
+                      '2026-11-18T10:55:56Z trailing'):
+            with self.subTest(value=value), self.assertRaises(DeliveryError) as error:
+                timestamp(value)
+            self.assertEqual(error.exception.code, 'invalid_timestamp')
+
+    def test_claim_guard_accepts_go_nanos_on_claim_and_heartbeat(self):
+        client = mock.Mock()
+        client.request.return_value = {'leaseExpiresAt': '2026-11-18T10:57:56.999999999Z',
+                                       'controlEpoch': 'epoch-a', 'claimEpoch': 1}
+        identity = {'controlEpoch': 'epoch-a', 'claimEpoch': 1}
+        guard = ClaimGuard(client, 'job-a', identity,
+                           {'leaseExpiresAt': '2026-11-18T10:55:56.386140646Z'})
+        with mock.patch('delivery_worker.time.time', return_value=0):
+            guard.heartbeat()
+        self.assertEqual(guard.expires,
+                         datetime(2026, 11, 18, 10, 57, 56, 999999, timezone.utc).timestamp())
+        client.request.assert_called_once_with('/api/edgestack/internal/delivery/jobs/job-a/heartbeat',
+                                                {**identity, 'phase': 'waiting_for_device'})
 
 
 class DeliveryTests(unittest.TestCase):

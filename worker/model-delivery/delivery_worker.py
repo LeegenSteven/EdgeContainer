@@ -28,7 +28,16 @@ TERMINAL = {'succeeded', 'failed', 'cancelled', 'interrupted'}
 
 def timestamp(value):
     try:
-        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        match = re.fullmatch(
+            r'([0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2})'
+            r'(?:\.([0-9]{1,9}))?(Z|[+-](?:[01][0-9]|2[0-3]):[0-5][0-9])', value)
+        if not match:
+            raise ValueError('invalid RFC3339 timestamp')
+        whole, fraction, zone = match.groups()
+        # Python 3.10 accepts only 3/6 fractional digits. Go emits up to nine;
+        # discard sub-microseconds so a lease deadline is never rounded later.
+        normalized = whole + ('.' + fraction[:6].ljust(6, '0') if fraction else '')
+        parsed = datetime.fromisoformat(normalized + ('+00:00' if zone == 'Z' else zone))
         if parsed.tzinfo is None:
             raise ValueError('missing time zone')
         return parsed.timestamp()
