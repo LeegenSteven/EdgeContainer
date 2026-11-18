@@ -96,7 +96,7 @@ func (d *Dispatcher) Preview(ctx context.Context, task edgestack.Task, model edg
 		if err != nil {
 			return err
 		}
-		if _, err = patchCompose(content, task, model); err != nil {
+		if _, err = patchComposeContext(ctx, content, task, model); err != nil {
 			return err
 		}
 		token = version(stack, content)
@@ -145,7 +145,7 @@ func (d *Dispatcher) Apply(ctx context.Context, task edgestack.Task, model edges
 		if expected != version(stack, content) {
 			return errors.New("target changed after preview")
 		}
-		updated, err = patchCompose(content, task, model)
+		updated, err = patchComposeContext(ctx, content, task, model)
 		if err != nil {
 			return err
 		}
@@ -248,12 +248,21 @@ func serviceNode(content []byte, serviceID string) (*yaml.Node, error) {
 	return root, nil
 }
 func patchCompose(content []byte, task edgestack.Task, model edgestack.ModelPackage) ([]byte, error) {
+	return patchComposeContext(context.Background(), content, task, model)
+}
+
+func patchComposeContext(ctx context.Context, content []byte, task edgestack.Task, model edgestack.ModelPackage) ([]byte, error) {
 	root, err := serviceNode(content, task.Target.ServiceID)
 	if err != nil {
 		return nil, err
 	}
 	services := mappingValue(root.Content[0], "services")
 	service := services.Content[1]
+	if task.TestTask && edgestack.IsModelValidation(ctx, task.ID, model.ID) {
+		if err := activateValidationService(service); err != nil {
+			return nil, err
+		}
+	}
 	image := mappingValue(service, "image")
 	if image == nil || image.Kind != yaml.ScalarNode {
 		return nil, errors.New("explicit image required")
@@ -309,4 +318,73 @@ func patchCompose(content []byte, task edgestack.Task, model edgestack.ModelPack
 		return nil, err
 	}
 	return out.Bytes(), nil
+}
+
+// Restart only an explicitly validated isolated test service. A normal model
+// replacement, including one on a TestTask, retains its stopped replica state.
+func activateValidationService(service *yaml.Node) error {
+	hasMerge := func(node *yaml.Node) bool {
+		if node == nil {
+			return false
+		}
+		for i := 0; i+1 < len(node.Content); i += 2 {
+			if node.Content[i].Value == "<<" || node.Content[i].Tag == "!!merge" {
+				return true
+			}
+		}
+		return false
+	}
+	if service.Anchor != "" || hasMerge(service) {
+		return errors.New("validation does not support service merge or anchor inheritance")
+	}
+	deploy := mappingValue(service, "deploy")
+	if deploy != nil && (deploy.Kind != yaml.MappingNode || deploy.Anchor != "" || hasMerge(deploy)) {
+		return errors.New("validation requires an explicit deploy mapping")
+	}
+	replicas := mappingValue(deploy, "replicas")
+	scale := mappingValue(service, "scale")
+	count := func(node *yaml.Node) (int, error) {
+		if node == nil {
+			return 1, nil
+		}
+		if node.Kind != yaml.ScalarNode || node.Anchor != "" {
+			return 0, errors.New("validation requires an explicit zero or one replica count")
+		}
+		value, err := strconv.Atoi(node.Value)
+		if err != nil || value < 0 || value > 1 {
+			return 0, errors.New("validation supports only zero or one replica")
+		}
+		return value, nil
+	}
+	r, err := count(replicas)
+	if err != nil {
+		return err
+	}
+	s, err := count(scale)
+	if err != nil {
+		return err
+	}
+	if replicas != nil && scale != nil && r != s {
+		return errors.New("validation scale and deploy replicas must agree")
+	}
+	if (replicas == nil || r == 1) && (scale == nil || s == 1) {
+		return nil
+	}
+	if deploy == nil {
+		deploy = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		service.Content = append(service.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "deploy"}, deploy)
+	}
+	if replicas == nil {
+		replicas = &yaml.Node{Kind: yaml.ScalarNode}
+		deploy.Content = append(deploy.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "replicas"}, replicas)
+	}
+	setOne := func(node *yaml.Node) {
+		node.Kind, node.Tag, node.Value = yaml.ScalarNode, "!!int", "1"
+		node.Content = nil
+	}
+	setOne(replicas)
+	if scale != nil {
+		setOne(scale)
+	}
+	return nil
 }

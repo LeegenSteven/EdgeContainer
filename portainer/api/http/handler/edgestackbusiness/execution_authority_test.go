@@ -51,7 +51,7 @@ func TestExecutionLeaseRenewalDoesNotExpireImmutableGrant(t *testing.T) {
 		if refused {
 			return &http.Response{StatusCode: 409, Body: io.NopCloser(strings.NewReader("revoked"))}, nil
 		}
-		return executionResponse(map[string]any{}), nil
+		return executionResponse(map[string]any{"valid": true, "lease_id": "lease", "group_id": "board", "expires_at": float64(time.Now().Add(120*time.Second).UnixMilli()) / 1000}), nil
 	})
 	// A grant is bounded independently of the board's renewable 120s lease.
 	grant := edge.ExecutionGrant{ResourceGroup: "board", LeaseID: "lease", FencingToken: 1, ControlEpoch: a.service.DeliveryControlEpoch(), OperationID: "operation", ExpectedStackVersion: 1, Action: "deploy", ExpiresAt: time.Now().Add(time.Hour)}
@@ -93,7 +93,7 @@ func TestAdministratorRecoveryFencesOldEpochAndStopsPausedContainer(t *testing.T
 	oldEpoch := a.service.DeliveryControlEpoch()
 	grant := edge.ExecutionGrant{ResourceGroup: "board", LeaseID: "lease-old", FencingToken: 1, ControlEpoch: oldEpoch, OperationID: "old-op", ExpectedStackVersion: 1, Action: "deploy", ExpiresAt: time.Now().Add(time.Hour)}
 	require.NoError(t, a.service.DeliverySaveExecutionBinding(edgestack.DeliveryExecutionBinding{EndpointID: 4, StackID: 1, TaskID: task.ID, DeviceID: task.DeviceID, Grant: grant}))
-	require.NoError(t, a.service.DeliverySaveExecutionLease(edgestack.DeliveryExecutionLease{AuthorityJobID: "edge-execution:old-op", ResourceGroup: "board", LeaseID: "lease-old", FencingToken: 1, ControlEpoch: oldEpoch, ExpiresAt: time.Now().Add(time.Minute), ActiveOperationID: "old-op"}))
+	require.NoError(t, a.service.DeliverySaveExecutionLease(edgestack.DeliveryExecutionLease{AuthorityJobID: "release:edge-execution:old-op", ResourceGroup: "board", LeaseID: "lease-old", FencingToken: 1, ControlEpoch: oldEpoch, ExpiresAt: time.Now().Add(time.Minute), ActiveOperationID: "old-op"}))
 	require.NoError(t, a.service.Close())
 	s, err := edgestack.Open(path, edgestack.Options{})
 	require.NoError(t, err)
@@ -108,18 +108,21 @@ func TestAdministratorRecoveryFencesOldEpochAndStopsPausedContainer(t *testing.T
 			takeovers++
 			var body map[string]any
 			require.NoError(t, json.NewDecoder(r.Body).Decode(&body))
-			require.Equal(t, "edge-execution:old-op", body["previous_job_id"])
-			return executionResponse(leaseAuthorityView{LeaseID: "lease-new", Status: "active", ExpiresAt: time.Now().Add(120 * time.Second), FencingTokens: map[string]uint64{"board": 2}}), nil
+			require.Equal(t, "release:edge-execution:old-op", body["previous_job_id"])
+			require.True(t, strings.HasPrefix(body["job_id"].(string), "release:edge-recovery:"))
+			return executionResponse(realLeaseFixture("active", "lease-new", body["job_id"].(string), 2, float64(time.Now().Add(120*time.Second).UnixMilli())/1000)), nil
 		}
 		if strings.HasSuffix(r.URL.Path, "/release") {
 			releases++
 			require.Equal(t, 1, client.stops)
-			return executionResponse(leaseAuthorityView{LeaseID: "lease-new", Status: "released"}), nil
+			lease, _, err := s.DeliveryExecutionLease("board")
+			require.NoError(t, err)
+			return executionResponse(realLeaseFixture("released", "lease-new", lease.AuthorityJobID, 2, nil)), nil
 		}
 		if r.Method == http.MethodGet {
-			return executionResponse(leaseAuthorityView{LeaseID: "lease-old", OwnerAgent: "edgestack_server", Purpose: "deploy_write", JobID: "edge-execution:old-op", FencingTokens: map[string]uint64{"board": 1}}), nil
+			return executionResponse(realLeaseFixture("active", "lease-old", "release:edge-execution:old-op", 1, float64(time.Now().Add(120*time.Second).UnixMilli())/1000)), nil
 		}
-		return executionResponse(map[string]any{}), nil
+		return executionResponse(map[string]any{"valid": true, "lease_id": "lease-new", "group_id": "board", "expires_at": float64(time.Now().Add(120*time.Second).UnixMilli()) / 1000}), nil
 	})
 	plan, err := a.previewExecutionStop(context.Background(), "board", 1)
 	require.NoError(t, err)

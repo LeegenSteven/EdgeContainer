@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -23,6 +24,12 @@ import (
 )
 
 type leaseAuthorityView struct {
+	Valid          bool     `json:"valid"`
+	GroupID        string   `json:"group_id"`
+	ResourceGroups []string `json:"resource_groups"`
+	ReleaseInfo    struct {
+		RemoteStopConfirmed bool `json:"remote_stop_confirmed"`
+	} `json:"release_info"`
 	OwnerAgent    string            `json:"owner_agent"`
 	Purpose       string            `json:"purpose"`
 	JobID         string            `json:"job_id"`
@@ -30,6 +37,51 @@ type leaseAuthorityView struct {
 	Status        string            `json:"status"`
 	ExpiresAt     time.Time         `json:"expires_at"`
 	FencingTokens map[string]uint64 `json:"fencing_tokens"`
+}
+
+// The real shared authority returns Unix seconds, while older adapters used
+// RFC3339. Waiting/cancelled leases can have no expiry; a zero value never
+// satisfies the separate live-lease checks.
+func (v *leaseAuthorityView) UnmarshalJSON(data []byte) error {
+	type plain leaseAuthorityView
+	*v = leaseAuthorityView{}
+	var wire struct {
+		*plain
+		ExpiresAt json.RawMessage `json:"expires_at"`
+	}
+	wire.plain = (*plain)(v)
+	if err := json.Unmarshal(data, &wire); err != nil {
+		return err
+	}
+	raw := bytes.TrimSpace(wire.ExpiresAt)
+	if len(raw) == 0 || bytes.Equal(raw, []byte("null")) {
+		return nil
+	}
+	if raw[0] == '"' {
+		if err := json.Unmarshal(raw, &v.ExpiresAt); err != nil {
+			return errors.New("invalid_shared_lease_expiry")
+		}
+	} else {
+		seconds, err := strconv.ParseFloat(string(raw), 64)
+		if err != nil || math.IsNaN(seconds) || math.IsInf(seconds, 0) || seconds <= 0 || seconds >= 253402300800 {
+			return errors.New("invalid_shared_lease_expiry")
+		}
+		whole, fraction := math.Modf(seconds)
+		v.ExpiresAt = time.Unix(int64(whole), int64(math.Round(fraction*1e9))).UTC()
+	}
+	if v.ExpiresAt.Unix() < 0 || v.ExpiresAt.Unix() > 253402300799 || v.ExpiresAt.Equal(time.Unix(0, 0)) {
+		return errors.New("invalid_shared_lease_expiry")
+	}
+	return nil
+}
+
+func executionAuthorityJob(operationID string) string { return "release:edge-execution:" + operationID }
+func executionRecoveryJob(planID string) string       { return "release:edge-recovery:" + planID }
+func executionLeaseIdentity(view leaseAuthorityView, group, job string) bool {
+	return view.LeaseID != "" && view.OwnerAgent == "edgestack_server" && view.Purpose == "deploy_write" && view.JobID == job && len(view.ResourceGroups) == 1 && view.ResourceGroups[0] == group && len(view.FencingTokens) == 1 && view.FencingTokens[group] > 0
+}
+func executionLeaseMatches(view leaseAuthorityView, value edgestack.DeliveryExecutionLease) bool {
+	return executionLeaseIdentity(view, value.ResourceGroup, value.AuthorityJobID) && view.LeaseID == value.LeaseID && view.FencingTokens[value.ResourceGroup] == value.FencingToken
 }
 
 type executionCapability struct {
@@ -153,8 +205,14 @@ func (a *deliveryExecutionAuthority) verifyLease(ctx context.Context, value edge
 	if value.Released || value.ControlEpoch != a.service.DeliveryControlEpoch() || !time.Now().Before(value.ExpiresAt) {
 		return errors.New("execution_lease_expired")
 	}
-	_, err := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(value.LeaseID)+"/verify", "", map[string]any{"resource_group": value.ResourceGroup, "fencing_token": value.FencingToken})
-	return err
+	view, err := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(value.LeaseID)+"/verify", "", map[string]any{"resource_group": value.ResourceGroup, "fencing_token": value.FencingToken})
+	if err != nil {
+		return err
+	}
+	if !view.Valid || view.LeaseID != value.LeaseID || view.GroupID != value.ResourceGroup || !time.Now().Before(view.ExpiresAt) {
+		return errors.New("execution_lease_verification_unconfirmed")
+	}
+	return nil
 }
 
 func (a *deliveryExecutionAuthority) Prepare(ctx context.Context, operationID string, task edgestack.Task, version int, action string) error {
@@ -190,14 +248,27 @@ func (a *deliveryExecutionAuthority) Prepare(ctx context.Context, operationID st
 			}
 		}
 	} else {
-		view, e := a.call(ctx, http.MethodPost, "/v1/device-leases", "edge-execution:"+operationID, map[string]any{"resource_groups": []string{group}, "owner_agent": "edgestack_server", "purpose": "deploy_write", "job_id": "edge-execution:" + operationID, "ttl_seconds": 120})
+		view, e := a.call(ctx, http.MethodPost, "/v1/device-leases", "edge-execution:"+operationID, map[string]any{"resource_groups": []string{group}, "owner_agent": "edgestack_server", "purpose": "deploy_write", "job_id": executionAuthorityJob(operationID), "ttl_seconds": 120})
 		if e != nil {
 			return e
 		}
-		if view.Status != "active" || view.LeaseID == "" || view.FencingTokens[group] == 0 || !time.Now().Before(view.ExpiresAt) {
+		if view.Status == "waiting" && view.LeaseID != "" && view.OwnerAgent == "edgestack_server" && view.JobID == executionAuthorityJob(operationID) && view.Purpose == "deploy_write" && len(view.ResourceGroups) == 1 && view.ResourceGroups[0] == group {
+			// Nothing was granted to an executor. Cancel the waiting request so it
+			// cannot later acquire an orphan occupancy and expire unconfirmed.
+			cancelled, cancelErr := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(view.LeaseID)+"/release", "", map[string]any{"remote_stop_confirmed": true, "evidence": "waiting acquisition cancelled before any execution grant or board command was issued"})
+			identity := cancelled.LeaseID == view.LeaseID && cancelled.OwnerAgent == view.OwnerAgent && cancelled.Purpose == view.Purpose && cancelled.JobID == view.JobID && len(cancelled.ResourceGroups) == 1 && cancelled.ResourceGroups[0] == group
+			waitingCancelled := cancelled.Status == "cancelled" && len(cancelled.FencingTokens) == 0
+			// A waiting request can become active just before cancellation. No
+			// executor received a grant, so a verified released reply is safe too.
+			racedRelease := cancelled.Status == "released" && executionLeaseIdentity(cancelled, group, executionAuthorityJob(operationID))
+			if cancelErr != nil || !identity || (!waitingCancelled && !racedRelease) || !cancelled.ReleaseInfo.RemoteStopConfirmed {
+				return errors.New("waiting_execution_lease_cancellation_unconfirmed")
+			}
+		}
+		if view.Status != "active" || !executionLeaseIdentity(view, group, executionAuthorityJob(operationID)) || !time.Now().Before(view.ExpiresAt) {
 			return errors.New("waiting_for_device_execution_lease")
 		}
-		lease = edgestack.DeliveryExecutionLease{AuthorityJobID: "edge-execution:" + operationID, ResourceGroup: group, LeaseID: view.LeaseID, FencingToken: view.FencingTokens[group], ControlEpoch: a.service.DeliveryControlEpoch(), ExpiresAt: view.ExpiresAt}
+		lease = edgestack.DeliveryExecutionLease{AuthorityJobID: executionAuthorityJob(operationID), ResourceGroup: group, LeaseID: view.LeaseID, FencingToken: view.FencingTokens[group], ControlEpoch: a.service.DeliveryControlEpoch(), ExpiresAt: view.ExpiresAt}
 	}
 	binding, exists, err := a.service.DeliveryExecutionBinding(task.Target.EndpointID, task.Target.StackID)
 	if err != nil {
@@ -271,6 +342,18 @@ func (a *deliveryExecutionAuthority) Verify(ctx context.Context, endpointID, sta
 	return a.verifyLease(ctx, lease)
 }
 
+func (a *deliveryExecutionAuthority) renewLease(ctx context.Context, lease edgestack.DeliveryExecutionLease) error {
+	view, err := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(lease.LeaseID)+"/heartbeat", "", map[string]any{"fencing_tokens": map[string]uint64{lease.ResourceGroup: lease.FencingToken}})
+	if err != nil {
+		return err
+	}
+	if view.Status != "active" || !executionLeaseMatches(view, lease) || !time.Now().Before(view.ExpiresAt) {
+		return errors.New("execution_lease_renewal_unconfirmed")
+	}
+	lease.ExpiresAt = view.ExpiresAt
+	return a.service.DeliverySaveExecutionLease(lease)
+}
+
 func (a *deliveryExecutionAuthority) Run(ctx context.Context) {
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
@@ -286,11 +369,7 @@ func (a *deliveryExecutionAuthority) Run(ctx context.Context) {
 					if lease.Released || lease.ControlEpoch != a.service.DeliveryControlEpoch() || !time.Now().Before(lease.ExpiresAt) {
 						continue
 					}
-					view, e := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(lease.LeaseID)+"/heartbeat", "", map[string]any{"fencing_tokens": map[string]uint64{lease.ResourceGroup: lease.FencingToken}})
-					if e == nil && view.Status == "active" && view.LeaseID == lease.LeaseID && view.FencingTokens[lease.ResourceGroup] == lease.FencingToken && time.Now().Before(view.ExpiresAt) {
-						lease.ExpiresAt = view.ExpiresAt
-						_ = a.service.DeliverySaveExecutionLease(lease)
-					}
+					_ = a.renewLease(ctx, lease)
 				}
 			}
 			a.mu.Unlock()

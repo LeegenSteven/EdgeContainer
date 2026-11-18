@@ -75,6 +75,13 @@ func validSourceType(kind string) bool {
 type validationKey struct{}
 type validationIntent struct{ packageID, taskID string }
 
+// IsModelValidation reports the private intent attached by the validated
+// administrator model-validation routes. Request JSON cannot set this marker.
+func IsModelValidation(ctx context.Context, taskID, packageID string) bool {
+	intent, ok := ctx.Value(validationKey{}).(validationIntent)
+	return ok && taskID != "" && packageID != "" && intent.taskID == taskID && intent.packageID == packageID
+}
+
 func (s *Service) selectionAllowed(r *http.Request, tx *bolt.Tx, task Task, device Device, model ModelPackage) bool {
 	if intent, ok := r.Context().Value(validationKey{}).(validationIntent); ok {
 		p, err := s.principal(r)

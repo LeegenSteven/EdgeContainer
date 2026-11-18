@@ -129,7 +129,7 @@ func (a *deliveryExecutionAuthority) previewExecutionStop(ctx context.Context, g
 		}
 	} else {
 		view, e := a.call(ctx, http.MethodGet, "/v1/device-leases/"+url.PathEscape(lease.LeaseID), "", nil)
-		if e != nil || view.LeaseID != lease.LeaseID || view.FencingTokens[group] != lease.FencingToken || view.OwnerAgent != "edgestack_server" || (view.Purpose != "deploy_write" && view.Purpose != "release") || (!strings.HasPrefix(view.JobID, "edge-execution:") && !strings.HasPrefix(view.JobID, "edge-recovery:")) {
+		if e != nil || !executionLeaseMatches(view, lease) || (!strings.HasPrefix(view.JobID, "release:edge-execution:") && !strings.HasPrefix(view.JobID, "release:edge-recovery:")) || (view.Status != "active" && view.Status != "expired_unconfirmed" && view.Status != "release_unconfirmed") {
 			return plan, errors.New("execution_recovery_owner_unconfirmed")
 		}
 		plan.PreviousJobID = view.JobID
@@ -239,11 +239,11 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 		}
 	}
 	if plan.Recovery {
-		view, e := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(plan.LeaseID)+"/takeover-release", plan.ID, map[string]any{"fencing_tokens": map[string]uint64{lease.ResourceGroup: lease.FencingToken}, "owner_agent": "edgestack_server", "job_id": "edge-recovery:" + plan.ID, "recovery_id": plan.ID, "previous_job_id": plan.PreviousJobID, "evidence": "administrator reviewed isolated validation targets; old control epoch fenced; container reconciliation follows"})
+		view, e := a.call(ctx, http.MethodPost, "/v1/device-leases/"+url.PathEscape(plan.LeaseID)+"/takeover-release", plan.ID, map[string]any{"fencing_tokens": map[string]uint64{lease.ResourceGroup: lease.FencingToken}, "owner_agent": "edgestack_server", "job_id": executionRecoveryJob(plan.ID), "recovery_id": plan.ID, "previous_job_id": plan.PreviousJobID, "evidence": "administrator reviewed isolated validation targets; old control epoch fenced; container reconciliation follows"})
 		if e != nil {
 			return e
 		}
-		if view.LeaseID == "" || view.FencingTokens[lease.ResourceGroup] <= lease.FencingToken {
+		if !executionLeaseIdentity(view, lease.ResourceGroup, executionRecoveryJob(plan.ID)) || view.LeaseID == lease.LeaseID || view.FencingTokens[lease.ResourceGroup] <= lease.FencingToken || view.FencingTokens[lease.ResourceGroup] != lease.FencingToken+1 || (view.Status != "active" && view.Status != "expired_unconfirmed" && view.Status != "release_unconfirmed") {
 			return errors.New("execution_recovery_fence_unconfirmed")
 		}
 		// Persist the successor even when its ACK reports expiry, so a new
@@ -252,7 +252,7 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 		lease.FencingToken = view.FencingTokens[lease.ResourceGroup]
 		lease.ControlEpoch = a.service.DeliveryControlEpoch()
 		lease.ExpiresAt = view.ExpiresAt
-		lease.AuthorityJobID = "edge-recovery:" + plan.ID
+		lease.AuthorityJobID = executionRecoveryJob(plan.ID)
 		lease.ActiveOperationID = plan.ID
 		if err = a.service.DeliverySaveExecutionLease(lease); err != nil {
 			return err
@@ -268,7 +268,7 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 	}
 	if plan.Stopped {
 		view, e := a.call(ctx, http.MethodGet, "/v1/device-leases/"+url.PathEscape(lease.LeaseID), "", nil)
-		if e == nil && (view.Status == "released" || lease.Released) {
+		if e == nil && view.Status == "released" && view.ReleaseInfo.RemoteStopConfirmed && executionLeaseMatches(view, lease) {
 			lease.Released = true
 			plan.Status = "released"
 			if e = a.service.DeliverySaveExecutionLease(lease); e != nil {
@@ -318,7 +318,7 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 	if err != nil {
 		return err
 	}
-	if view.LeaseID != lease.LeaseID || view.Status != "released" {
+	if view.Status != "released" || !view.ReleaseInfo.RemoteStopConfirmed || !executionLeaseMatches(view, lease) {
 		return errors.New("execution_release_unconfirmed")
 	}
 	lease.Released = true
