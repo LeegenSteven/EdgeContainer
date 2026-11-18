@@ -341,6 +341,151 @@ class DeliveryTests(unittest.TestCase):
         commands.run.assert_not_called()
         journal.close()
 
+    def test_validation_complete_retries_cold_runtime_with_one_probe_and_same_report(self):
+        journal = Journal(self.root / 'journal.db')
+        self.addCleanup(journal.close)
+        job = fixture_job()
+        state = journal.bind(job)
+        identity = {'workerId': 'worker-a', 'claimEpoch': 4, 'claimToken': 'private', 'controlEpoch': 'ctl'}
+        image, release = 'repo@sha256:' + 'f' * 64, 'sha256:' + 'e' * 64
+        payloads = []
+        errors = [ApiError(503, {'errorCode': 'model_runtime_unverified'}),
+                  ApiError(503, {'errorCode': 'delivery_validation_health_failed'}),
+                  TransportError('transport_unknown', 'Completion acknowledgement was lost')]
+
+        def request(path, payload):
+            if path.endswith('/start'):
+                return {'operationId': 'original', 'status': 'awaiting_observation'}
+            self.assertTrue(path.endswith('/complete'))
+            payloads.append(canonical(payload))
+            if errors:
+                raise errors.pop(0)
+            return {'status': 'passed', 'report': {**payload['report'], 'digest': 'sha256:' + 'd' * 64}}
+
+        def probe(argv, **kwargs):
+            return canonical({'deviceId': job['deviceId'], 'taskId': job['validationTaskId'], 'image': image,
+                              'modelHash': job['source']['sha256'], 'runtimeProfileDigest': job['recipe']['runtimeProfileDigest'],
+                              'nonce': argv[1], 'simulated': False, 'healthy': True, 'latencyMs': 50,
+                              'memoryBytes': 512, 'errorRate': 0, 'quality': 1,
+                              'observedAt': datetime.now(timezone.utc).isoformat()})
+
+        server, commands = mock.Mock(), mock.Mock()
+        server.request.side_effect, commands.run.side_effect = request, probe
+        worker = Worker({'workerId': 'worker-a', 'recipes': []}, server=server, agent=mock.Mock(), journal=journal)
+        with mock.patch('delivery_worker.time.sleep') as sleep:
+            report = worker.validate_container(job, state, identity, Guard(), commands,
+                                               {'containerProbeArgv': ['/approved/probe', '{nonce}']}, image, release)
+        self.assertEqual(len(payloads), 4)
+        self.assertEqual(len(set(payloads)), 1)
+        self.assertEqual(json.loads(payloads[0])['claimEpoch'], 4)
+        self.assertEqual(server.request.call_count, 5)
+        commands.run.assert_called_once()
+        self.assertEqual(sleep.call_count, 3)
+        self.assertEqual(state['validationOperationId'], 'original')
+        self.assertEqual(journal.get(job['id'])['validationReport'], report)
+
+    def test_saved_validation_report_retries_without_dispatch_or_probe(self):
+        journal = Journal(self.root / 'journal.db')
+        self.addCleanup(journal.close)
+        job = fixture_job()
+        state = journal.bind(job)
+        report = {'jobId': job['id'], 'image': 'repo@sha256:' + 'f' * 64,
+                  'releaseDigest': 'sha256:' + 'e' * 64, 'modelHash': job['source']['sha256'], 'digest': 'sha256:' + 'd' * 64}
+        state.update(validationReport=report, validationOperationId='passed-operation')
+        server, commands = mock.Mock(), mock.Mock()
+        server.request.side_effect = [ApiError(503, {'errorCode': 'model_runtime_unverified'}),
+                                      TransportError('transport_unknown', 'Acknowledgement was lost'),
+                                      {'status': 'passed', 'report': report}]
+        worker = Worker({'workerId': 'worker-a', 'recipes': []}, server=server, agent=mock.Mock(), journal=journal)
+        with mock.patch('delivery_worker.time.sleep'):
+            self.assertEqual(worker.validate_container(job, state, {'claimEpoch': 2}, Guard(), commands,
+                                                       {}, report['image'], report['releaseDigest']), report)
+        self.assertEqual(server.request.call_count, 3)
+        for call in server.request.call_args_list:
+            self.assertTrue(call.args[0].endswith('/complete'))
+            self.assertEqual(call.args[1], {'claimEpoch': 2, 'report': report})
+        commands.run.assert_not_called()
+
+    def test_validation_complete_does_not_retry_permission_identity_or_other_errors(self):
+        errors = [ApiError(403, {'errorCode': 'model_runtime_unverified'}),
+                  ApiError(409, {'errorCode': 'delivery_validation_health_failed'}),
+                  ApiError(400, {'errorCode': 'validation_report_changed'}),
+                  ApiError(503, {'errorCode': 'validation_image_digest_mismatch'}),
+                  TransportError('transport_unapproved', 'Not an ambiguous transport outcome')]
+        worker = Worker.__new__(Worker)
+        for error in errors:
+            with self.subTest(status=getattr(error, 'status', None), code=error.code):
+                worker.server = mock.Mock()
+                worker.server.request.side_effect = error
+                with mock.patch('delivery_worker.time.sleep') as sleep:
+                    with self.assertRaises(type(error)) as caught:
+                        worker.complete_validation('/validation', {'claimEpoch': 2}, {'id': 'same-report'},
+                                                   Guard(), time.monotonic() + 60)
+                self.assertIs(caught.exception, error)
+                worker.server.request.assert_called_once()
+                sleep.assert_not_called()
+
+    def test_validation_complete_timeout_is_bounded_and_preserves_report(self):
+        worker = Worker.__new__(Worker)
+        worker.server = mock.Mock()
+        worker.server.request.side_effect = ApiError(503, {'errorCode': 'model_runtime_unverified'})
+        clock = [0.0]
+        report = {'id': 'same-report'}
+        with mock.patch('delivery_worker.time.monotonic', side_effect=lambda: clock[0]), \
+                mock.patch('delivery_worker.time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)) as sleep:
+            with self.assertRaises(DeliveryError) as caught:
+                worker.complete_validation('/validation', {'claimEpoch': 2}, report, Guard(), 3)
+        self.assertEqual(caught.exception.code, 'validation_completion_timeout')
+        self.assertEqual(clock[0], 3)
+        self.assertEqual(sleep.call_args_list, [mock.call(2), mock.call(1)])
+        self.assertEqual(worker.server.request.call_count, 2)
+        self.assertEqual(report, {'id': 'same-report'})
+
+    def test_validation_complete_stops_retry_immediately_when_claim_is_lost(self):
+        worker = Worker.__new__(Worker)
+        worker.server = mock.Mock()
+        worker.server.request.side_effect = TransportError('transport_unknown', 'Acknowledgement was lost')
+        guard = ClaimGuard(mock.Mock(), 'job-a', {}, {'leaseExpiresAt': '2099-01-01T00:00:00Z'})
+        with mock.patch('delivery_worker.time.sleep', side_effect=lambda seconds: guard.lost.set()) as sleep:
+            with self.assertRaises(DeliveryError) as caught:
+                worker.complete_validation('/validation', {'claimEpoch': 2}, {'id': 'same-report'},
+                                           guard, time.monotonic() + 60)
+        self.assertEqual(caught.exception.code, 'claim_lost')
+        worker.server.request.assert_called_once()
+        sleep.assert_called_once()
+
+    def test_validation_complete_uses_remaining_dispatch_and_probe_deadline(self):
+        journal = Journal(self.root / 'journal.db')
+        self.addCleanup(journal.close)
+        job = fixture_job()
+        state = journal.bind(job)
+        image, release = 'repo@sha256:' + 'f' * 64, 'sha256:' + 'e' * 64
+        clock = [0.0]
+        server, commands = mock.Mock(), mock.Mock()
+        server.request.side_effect = [{'operationId': 'original', 'status': 'dispatching'},
+                                      {'operationId': 'original', 'status': 'awaiting_observation'}]
+
+        def probe(argv, **kwargs):
+            clock[0] += 2
+            return canonical({'deviceId': job['deviceId'], 'taskId': job['validationTaskId'], 'image': image,
+                              'modelHash': job['source']['sha256'], 'runtimeProfileDigest': job['recipe']['runtimeProfileDigest'],
+                              'nonce': argv[1], 'simulated': False, 'healthy': True, 'latencyMs': 50,
+                              'memoryBytes': 512, 'errorRate': 0, 'quality': 1,
+                              'observedAt': datetime.now(timezone.utc).isoformat()})
+
+        commands.run.side_effect = probe
+        worker = Worker({'workerId': 'worker-a', 'recipes': []}, server=server, agent=mock.Mock(), journal=journal)
+        with mock.patch('delivery_worker.time.monotonic', side_effect=lambda: clock[0]), \
+                mock.patch('delivery_worker.time.sleep', side_effect=lambda seconds: clock.__setitem__(0, clock[0] + seconds)):
+            with self.assertRaises(DeliveryError) as caught:
+                worker.validate_container(job, state, {}, Guard(), commands,
+                                          {'containerProbeArgv': ['/approved/probe', '{nonce}'], 'validationTimeoutSeconds': 3},
+                                          image, release)
+        self.assertEqual(caught.exception.code, 'validation_completion_timeout')
+        self.assertEqual(server.request.call_count, 2)
+        self.assertTrue(all(not call.args[0].endswith('/complete') for call in server.request.call_args_list))
+        commands.run.assert_called_once()
+
     def test_lost_result_ack_restart_reuses_result_id_without_execution(self):
         job = fixture_job()
         journal = Journal(self.root / 'journal.db')

@@ -344,15 +344,41 @@ class Worker:
         # Server computes artifact/report canonical identities across JSON number/time representations.
         return {'status': 'artifact_ready', 'artifact': artifact, 'report': report}
 
+    def complete_validation(self, path, identity, report, guard, deadline):
+        payload = {**identity, 'report': report}
+        while True:
+            guard.check()
+            if time.monotonic() >= deadline:
+                raise DeliveryError('validation_completion_timeout', 'Server validation did not become ready before the deadline')
+            try:
+                response = self.server.request(path + '/complete', payload)
+            except (ApiError, TransportError) as error:
+                if isinstance(error, ApiError):
+                    if error.status != 503 or error.code not in ('model_runtime_unverified', 'delivery_validation_health_failed'):
+                        raise
+                elif error.code != 'transport_unknown':
+                    raise
+                guard.check()
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise DeliveryError('validation_completion_timeout', 'Server validation did not become ready before the deadline') from error
+                time.sleep(min(2, remaining))
+                continue
+            guard.check()
+            if time.monotonic() >= deadline:
+                raise DeliveryError('validation_completion_timeout', 'Server validation did not become ready before the deadline')
+            return response
+
     def validate_container(self, job, state, identity, guard, commands, local, image, release_digest):
         guard.set_phase('image_validation')
         path = INTERNAL + '/jobs/' + job['id'] + '/validation'
+        deadline = time.monotonic() + local.get('validationTimeoutSeconds', 600)
         if state.get('validationReport'):
             saved = state['validationReport']
             if (saved.get('jobId') != job['id'] or saved.get('image') != image
                     or saved.get('releaseDigest') != release_digest or saved.get('modelHash') != job['source']['sha256']):
                 raise DeliveryError('validation_report_changed', 'Stored validation report differs from the frozen release')
-            response = self.server.request(path + '/complete', {**identity, 'report': saved})
+            response = self.complete_validation(path, identity, saved, guard, deadline)
             if response.get('status') != 'passed' or response.get('report') != saved:
                 raise DeliveryError('server_validation_mismatch', 'Server did not preserve the completed validation report')
             return saved
@@ -376,7 +402,6 @@ class Worker:
         if state.get('validationOperationId') and state['validationOperationId'] != operation['operationId']:
             raise DeliveryError('validation_operation_changed', 'Server returned a different validation operation')
         self.checkpoint(job, state, validationOperationId=operation['operationId'])
-        deadline = time.monotonic() + local.get('validationTimeoutSeconds', 600)
         while operation.get('status') not in ('awaiting_observation', 'succeeded'):
             guard.check()
             if operation.get('status') not in ('dispatching', 'queued', 'pending'):
@@ -412,7 +437,7 @@ class Worker:
                   'containerVerified': True, 'simulated': False,
                   **{key: proof[key] for key in ('latencyMs', 'memoryBytes', 'errorRate', 'quality', 'observedAt')}}
         guard.check()
-        result = self.server.request(path + '/complete', {**identity, 'report': report})
+        result = self.complete_validation(path, identity, report, guard, deadline)
         authoritative = result.get('report') or {}
         if result.get('status') != 'passed' or not authoritative.get('digest'):
             raise DeliveryError('server_validation_unverified', 'Server did not independently verify the deployed model scope')
