@@ -16,7 +16,16 @@ var _ deployer.Deployer = &DockerComposeStackService{}
 
 // DockerComposeStackService represents a service for managing stacks by using the Docker binary.
 type DockerComposeStackService struct {
-	deployer libstack.Deployer
+	deployer   libstack.Deployer
+	ownerScope string
+}
+
+func NewScopedDockerComposeStackService(scope string) (*DockerComposeStackService, error) {
+	deployer, err := compose.NewScopedComposeDeployer(scope)
+	if err != nil {
+		return nil, err
+	}
+	return &DockerComposeStackService{deployer: deployer, ownerScope: scope}, nil
 }
 
 // NewDockerComposeStackService initializes a new DockerStackService service.
@@ -86,8 +95,11 @@ func (service *DockerComposeStackService) GetEdgeStacks(ctx context.Context) ([]
 	}
 
 	for _, s := range edgeStacks {
+		if s.OwnerScope != service.ownerScope {
+			continue
+		}
 		// Remove the prefix because it will get added back by the stack manager
-		s.Name = strings.TrimPrefix(s.Name, "edge_")
+		s.Name = strings.TrimPrefix(s.Name, libstack.EdgeStackProjectName(service.ownerScope, ""))
 
 		r = append(r, agent.EdgeStack(s))
 	}

@@ -17,6 +17,9 @@ const RestoreMarker = "restore-pending"
 // BackupTo must be called while the shared backup gate holds its write lease.
 // Tx.WriteTo exports a consistent snapshot, never a live database file copy.
 func (s *Service) BackupTo(w io.Writer) error {
+	if err := s.VerifyDeliveryExecutionScope(s.opts.ExecutionScope); err != nil {
+		return err
+	}
 	return s.db.View(func(tx *bolt.Tx) error {
 		operations, err := list[Operation](tx, "operations")
 		if err != nil {
@@ -40,6 +43,9 @@ func ValidateBackup(path string) error {
 	}
 	defer db.Close()
 	return db.View(func(tx *bolt.Tx) error {
+		if _, _, err := readExecutionScope(tx); err != nil {
+			return err
+		}
 		for _, name := range []string{"devices", "tasks", "sources", "events", "credentials", "models"} {
 			if tx.Bucket([]byte(name)) == nil {
 				return errors.New("incomplete business database backup")
@@ -62,6 +68,9 @@ func ValidateBackup(path string) error {
 // Credential revocation is deliberately repeated until the marker is removed.
 // This prevents restoring a formerly revoked credential from an older backup.
 func (s *Service) ApplyRestorePolicy(endpointExists func(int) bool, aclExists func(ACL) bool) error {
+	if err := s.VerifyDeliveryExecutionScope(s.opts.ExecutionScope); err != nil {
+		return err
+	}
 	marker := filepath.Join(filepath.Dir(s.db.Path()), RestoreMarker)
 	if _, err := os.Stat(marker); os.IsNotExist(err) {
 		return nil

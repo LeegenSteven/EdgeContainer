@@ -15,11 +15,16 @@ import (
 	"github.com/portainer/portainer/api/http/offlinegate"
 	"github.com/portainer/portainer/api/http/security"
 	edgestackservice "github.com/portainer/portainer/api/internal/edge/edgestacks"
+	"github.com/portainer/portainer/pkg/libstack"
 )
 
 // New keeps business authorization additive to the existing Portainer session
 // and endpoint/group authorization. No existing administration route changes.
 func New(ctx context.Context, bouncer security.BouncerService, store dataservices.DataStore, files portainer.FileService, stacks *edgestackservice.Service, factory *dockerclient.ClientFactory, gates ...*offlinegate.OfflineGate) (*edgestack.Service, error) {
+	executionScope := os.Getenv("EDGESTACK_EXECUTION_SCOPE")
+	if err := libstack.ValidateEdgeStackScope(executionScope); err != nil {
+		return nil, err
+	}
 	dispatcher := &Dispatcher{store: store, files: files}
 	bootstrapDisabled, err := edgestack.StartupBootstrapDisabled(filepath.Join(files.GetDatastorePath(), "edgestack"))
 	if err != nil {
@@ -49,7 +54,7 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		lease = func() (func(), error) { return gates[0].ReadLease(time.Minute) }
 	}
 	var voiceTestHTML []byte
-	mounts := newMountProvider(store, factory)
+	mounts := newMountProvider(store, factory, executionScope)
 	if path := os.Getenv("EDGESTACK_VOICE_TEST_FILE"); path != "" {
 		var err error
 		voiceTestHTML, err = os.ReadFile(path)
@@ -85,7 +90,8 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		return nil, err
 	}
 	service, err := edgestack.Open(filepath.Join(files.GetDatastorePath(), "edgestack", "business.db"), edgestack.Options{
-		ValidateACL: validateACL, BackgroundWriteLease: lease,
+		ExecutionScope: executionScope,
+		ValidateACL:    validateACL, BackgroundWriteLease: lease,
 		InspectAccess: inspectAccess,
 		Authenticated: bouncer.AuthenticatedAccess, AdminAccess: bouncer.AdminAccess,
 		Authenticate: func(r *http.Request) (edgestack.Principal, error) {

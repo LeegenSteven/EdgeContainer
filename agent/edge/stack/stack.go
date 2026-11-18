@@ -162,7 +162,7 @@ func (manager *StackManager) processStack(stackID int, stackStatus client.StackS
 	stack.CreatedBy = stackPayload.CreatedBy
 	stack.CreatedByUserId = stackPayload.CreatedByUserId
 	stack.HelmConfig = stackPayload.HelmConfig
-	stack.FileFolder = getStackFileFolder(stack)
+	stack.FileFolder = getStackFileFolder(stack, manager.stackScope)
 
 	// When to force recreate the stack
 	// 1. When the stack is updated by GitOps with the ForceUpdate flag set to true
@@ -244,7 +244,7 @@ func (manager *StackManager) performActionOnStack() {
 		stack.FirstAction = stack.LastAction
 	}
 
-	stackName := "edge_" + stack.Name
+	stackName := libstack.EdgeStackProjectName(manager.stackScope, stack.Name)
 	stackFileLocation := fmt.Sprintf("%s/%s", stack.FileFolder, stack.FileName)
 
 	// When the edge update fails after the old agent container was stopped, and portainer-updater compensates by restarting the old agent container.
@@ -302,7 +302,7 @@ func (manager *StackManager) performActionOnStack() {
 		// Therefore, this operation should only be performed if the stack is new
 		// or the AlwaysCloneGitRepoForRelativePath flag is set to true.
 		if !IsHelmStack(stack) && IsRelativePathStack(stack) && (stack.Action == actionDeploy || stack.AlwaysCloneGitRepoForRelativePath) {
-			dst := filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+			dst := manager.composeHostPath(stack)
 
 			if err := docker.CopyGitStackToHost(stack.FileFolder, dst, stack.ID, stackName, stack.RegistryCredentials); err != nil {
 				log.Error().Err(err).Msg("unable to copy the stack to host")
@@ -744,7 +744,7 @@ func (manager *StackManager) cleanupStack(stack *edgeStack, stackName string) {
 
 	// Remove git folder
 	if !IsHelmStack(stack) && IsRelativePathStack(stack) {
-		dst := filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+		dst := manager.composeHostPath(stack)
 
 		if err := docker.RemoveGitStackFromHost(stack.FileFolder, dst, stack.ID, stackName, stack.RegistryCredentials); err != nil {
 			log.Warn().

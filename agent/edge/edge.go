@@ -128,6 +128,7 @@ func (manager *Manager) Start() error {
 		manager.agentOptions.EdgeMetaFields,
 		client.BuildHTTPClient(client.DefaultHTTPClientTimeoutSeconds, manager.agentOptions),
 		manager.agentOptions.GPUOperator,
+		client.WithExecutionScope(manager.agentOptions.EdgeStackScope),
 	)
 
 	manager.stackManager = stack.NewStackManager(
@@ -136,6 +137,9 @@ func (manager *Manager) Start() error {
 		manager.agentOptions.EdgeID,
 		manager.kubeClient,
 	)
+	if err := manager.stackManager.SetStackScope(manager.agentOptions.EdgeStackScope); err != nil {
+		return err
+	}
 
 	manager.logsManager = scheduler.NewLogsManager(portainerClient)
 	manager.logsManager.Start()

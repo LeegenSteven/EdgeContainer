@@ -21,6 +21,7 @@ import (
 	httperror "github.com/portainer/portainer/pkg/libhttp/error"
 	"github.com/portainer/portainer/pkg/libhttp/request"
 	"github.com/portainer/portainer/pkg/libhttp/response"
+	"github.com/portainer/portainer/pkg/libstack"
 	"github.com/rs/zerolog/log"
 )
 
@@ -74,6 +75,9 @@ type endpointEdgeStatusInspectResponse struct {
 // @failure 500 "Server error"
 // @router /endpoints/{id}/edge/status [get]
 func (handler *Handler) endpointEdgeStatusInspect(w http.ResponseWriter, r *http.Request) *httperror.HandlerError {
+	if !handler.executionScopeMatches(r) {
+		return httperror.Forbidden("Execution scope mismatch", nil)
+	}
 	endpointID, err := request.RetrieveNumericRouteVariableValue(r, "id")
 	if err != nil {
 		return httperror.BadRequest("Invalid environment identifier route variable", err)
@@ -97,7 +101,7 @@ func (handler *Handler) endpointEdgeStatusInspect(w http.ResponseWriter, r *http
 	}
 
 	if handler.ExecutionCapability != nil {
-		if err := handler.ExecutionCapability(r.Context(), int(endpoint.ID), r.Header.Get("X-EdgeStack-Execution-Grants")); err != nil {
+		if err := handler.ExecutionCapability(r.Context(), int(endpoint.ID), r.Header.Get("X-EdgeStack-Execution-Grants"), r.Header.Get(libstack.EdgeStackExecutionScopeHeader)); err != nil {
 			return httperror.InternalServerError("Execution registry unavailable", err)
 		}
 	}

@@ -15,6 +15,7 @@ import (
 	aos "github.com/portainer/agent/os"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 	pkgmetrics "github.com/portainer/portainer/pkg/metrics"
 
 	lru "github.com/hashicorp/golang-lru"
@@ -37,6 +38,7 @@ type PortainerEdgeClient struct {
 	reqCache         *lru.Cache
 	alertStateHeader string
 	gpuOperator      bool
+	executionScope   string
 }
 
 type globalKeyResponse struct {
@@ -94,6 +96,7 @@ func NewPortainerEdgeClient(
 		httpClient:      httpClient,
 		metaFields:      metaFields,
 		gpuOperator:     clientOpts.gpuOperator,
+		executionScope:  clientOpts.executionScope,
 	}
 
 	cache, err := lru.New(8)
@@ -202,6 +205,7 @@ func (client *PortainerEdgeClient) GetEnvironmentStatus(flags ...string) (*PollS
 
 	req.Header.Set(agent.HTTPResponseAgentHeaderName, client.version)
 	req.Header.Set(edge.ExecutionGrantsHeader, edge.ExecutionGrantsCapability)
+	req.Header.Set(libstack.EdgeStackExecutionScopeHeader, client.executionScope)
 	req.Header.Set(agent.HTTPEdgeIdentifierHeaderName, client.edgeID)
 
 	timeZone := time.Local.String()
@@ -275,6 +279,7 @@ func (client *PortainerEdgeClient) GetEdgeStackConfig(edgeStackID int, version *
 
 	req.Header.Set(agent.HTTPEdgeIdentifierHeaderName, client.edgeID)
 	req.Header.Set(edge.ExecutionGrantsHeader, edge.ExecutionGrantsCapability)
+	req.Header.Set(libstack.EdgeStackExecutionScopeHeader, client.executionScope)
 
 	resp, err := client.httpClient.Do(req)
 	if err != nil {

@@ -17,7 +17,8 @@ type DeliveryExecutionAuthority interface {
 	Prepare(context.Context, string, Task, int, string) error
 	Payload(context.Context, int, int) (bool, *edge.ExecutionGrant, error)
 	Verify(context.Context, int, int, string, edge.ExecutionGrant) error
-	ObserveCapability(context.Context, int, string) error
+	ObserveCapability(context.Context, int, string, string) error
+	ExecutionScope() string
 	NativeGuard(http.Handler) http.Handler
 	Run(context.Context)
 }

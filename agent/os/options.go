@@ -6,6 +6,7 @@ import (
 
 	"github.com/pkg/errors"
 	"github.com/portainer/agent"
+	"github.com/portainer/portainer/pkg/libstack"
 
 	"github.com/alecthomas/kingpin/v2"
 )
@@ -23,6 +24,7 @@ const (
 	EnvKeyEdgeAsync                    = "EDGE_ASYNC"
 	EnvKeyEdgeKey                      = "EDGE_KEY"
 	EnvKeyEdgeID                       = "EDGE_ID"
+	EnvKeyEdgeStackScope               = "EDGE_STACK_SCOPE"
 	EnvKeyEdgeServerHost               = "EDGE_SERVER_HOST"
 	EnvKeyEdgeServerPort               = "EDGE_SERVER_PORT"
 	EnvKeyEdgeInactivityTimeout        = "EDGE_INACTIVITY_TIMEOUT"
@@ -81,6 +83,7 @@ var (
 	fEdgeAsyncMode         = kingpin.Flag("edge-async", EnvKeyEdge+" enable Edge Async mode. Disabled by default, set to 1 or true to enable it").Envar(EnvKeyEdgeAsync).Bool()
 	fEdgeKey               = kingpin.Flag("edge-key", EnvKeyEdgeKey+" specify an Edge key to use at startup").Envar(EnvKeyEdgeKey).String()
 	fEdgeID                = kingpin.Flag("edge-id", EnvKeyEdgeID+" a unique identifier associated to this agent cluster").Envar(EnvKeyEdgeID).String()
+	fEdgeStackScope        = kingpin.Flag("edge-stack-scope", EnvKeyEdgeStackScope+" opt-in Docker Compose execution namespace; does not adopt legacy or foreign stacks").Envar(EnvKeyEdgeStackScope).String()
 	fEdgeServerAddr        = kingpin.Flag("edge-host", EnvKeyEdgeServerHost+" address on which the Edge UI will be exposed (default to 0.0.0.0)").Envar(EnvKeyEdgeServerHost).Default(agent.DefaultEdgeServerAddr).IP()
 	fEdgeServerPort        = kingpin.Flag("edge-port", EnvKeyEdgeServerPort+" port on which the Edge UI will be exposed (default to 80)").Envar(EnvKeyEdgeServerPort).Default(agent.DefaultEdgeServerPort).Int()
 	fEdgeInactivityTimeout = kingpin.Flag("edge-inactivity", EnvKeyEdgeInactivityTimeout+" timeout used by the agent to close the reverse tunnel after inactivity (default to 5m)").Envar(EnvKeyEdgeInactivityTimeout).Default(agent.DefaultEdgeSleepInterval).String()
@@ -124,6 +127,9 @@ func init() {
 
 func (parser EnvOptionParser) Options() (*agent.Options, error) {
 	kingpin.Parse()
+	if err := libstack.ValidateEdgeStackScope(*fEdgeStackScope); err != nil {
+		return nil, err
+	}
 
 	edgeGroupsIDs, err := parseListValue(fEdgeGroupsIDs)
 	if err != nil {
@@ -153,6 +159,7 @@ func (parser EnvOptionParser) Options() (*agent.Options, error) {
 		EdgeAsyncMode:                *fEdgeAsyncMode,
 		EdgeKey:                      *fEdgeKey,
 		EdgeID:                       *fEdgeID,
+		EdgeStackScope:               *fEdgeStackScope,
 		EdgeUIServerAddr:             fEdgeServerAddr.String(),
 		EdgeUIServerPort:             strconv.Itoa(*fEdgeServerPort),
 		EdgeInactivityTimeout:        *fEdgeInactivityTimeout,

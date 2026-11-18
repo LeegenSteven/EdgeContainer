@@ -56,6 +56,10 @@ func Open(path string, opts Options) (*Service, error) {
 		db.Close()
 		return nil, err
 	}
+	if err = s.initExecutionScope(); err != nil {
+		db.Close()
+		return nil, err
+	}
 	if err = s.migrateAdminSchema(); err != nil {
 		db.Close()
 		return nil, err

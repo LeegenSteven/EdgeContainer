@@ -8,6 +8,8 @@ import (
 
 type ComposeDeployer struct {
 	createComposeServiceFn func(command.Cli, ...compose.Option) api.Compose
+	ownerScope             string
+	scopeResourceClientFn  func(command.Cli) scopeResourceClient
 }
 
 // NewComposeDeployer creates a new compose deployer

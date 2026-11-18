@@ -27,8 +27,22 @@ func backupSuccessStack(stack *edgeStack) error {
 	return filesystem.CopyDir(src, dst, false)
 }
 
-func getStackFileFolder(stack *edgeStack) string {
+func getStackFileFolder(stack *edgeStack, scopes ...string) string {
 	stackIDStr := strconv.Itoa(stack.ID)
+	scope := ""
+	if len(scopes) > 0 {
+		scope = scopes[0]
+	}
+	if scope != "" {
+		base := agent.EdgeStackFilesPath
+		if stack.EdgeUpdateID != 0 {
+			base = agent.UpdateEdgeStackFilesPath
+		}
+		if IsRelativePathStack(stack) {
+			base = filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+		}
+		return filesystem.JoinPaths(base, "scopes", scope, stackIDStr)
+	}
 
 	if IsHelmStack(stack) {
 		return filesystem.JoinPaths(agent.EdgeStackFilesPath, stackIDStr)
@@ -42,6 +56,14 @@ func getStackFileFolder(stack *edgeStack) string {
 	}
 
 	return folder
+}
+
+func (manager *StackManager) composeHostPath(stack *edgeStack) string {
+	base := filesystem.JoinPaths(stack.FilesystemPath, agent.ComposePathPrefix)
+	if manager.stackScope != "" {
+		return filesystem.JoinPaths(base, "scopes", manager.stackScope)
+	}
+	return base
 }
 
 // IsHelmStack reports whether the stack is any kind of helm stack

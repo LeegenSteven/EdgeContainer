@@ -9,6 +9,11 @@ type options struct {
 	version           string
 	dockerSnapshotter DockerSnapshotter
 	gpuOperator       bool
+	executionScope    string
+}
+
+func WithExecutionScope(scope string) Option {
+	return func(o *options) { o.executionScope = scope }
 }
 
 func defaultOptions() *options {

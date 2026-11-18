@@ -271,6 +271,7 @@ type RuntimeProvider interface {
 }
 
 type Options struct {
+	ExecutionScope               string
 	DeliveryExecutionAuthority   DeliveryExecutionAuthority
 	DeliveryArtifactRoot         string
 	DeliveryTrustedPublicKeyFile string

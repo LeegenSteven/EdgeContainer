@@ -198,9 +198,10 @@ func (server *Server) Start(ctx context.Context) error {
 	var endpointEdgeHandler = endpointedge.NewHandler(requestBouncer, server.DataStore, server.FileService, server.ReverseTunnelService)
 	executionAuthority := businessService.DeliveryExecutionAuthority()
 	if executionAuthority != nil {
+		endpointEdgeHandler.ExecutionScope = executionAuthority.ExecutionScope()
 		endpointEdgeHandler.ExecutionPayload = executionAuthority.Payload
 		endpointEdgeHandler.ExecutionCapability = executionAuthority.ObserveCapability
-		endpointEdgeHandler.ExecutionVerify = edgestackbusiness.NewExecutionGrantHandler(server.DataStore, executionAuthority.Verify)
+		endpointEdgeHandler.ExecutionVerify = edgestackbusiness.NewExecutionGrantHandler(server.DataStore, executionAuthority.Verify, executionAuthority.ExecutionScope())
 	}
 
 	var endpointGroupHandler = endpointgroups.NewHandler(requestBouncer)

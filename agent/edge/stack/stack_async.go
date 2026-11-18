@@ -2,6 +2,7 @@ package stack
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"github.com/portainer/agent"
@@ -15,6 +16,10 @@ import (
 
 func (manager *StackManager) DeleteNormalStack(ctx context.Context, stackName string, removeVolumes bool) error {
 	manager.mu.Lock()
+	if manager.stackScope != "" {
+		manager.mu.Unlock()
+		return errors.New("normal stack removal is unavailable in scoped edge execution")
+	}
 	if manager.executionFences == nil {
 		manager.executionFences = &executionFenceStore{}
 	}
@@ -122,7 +127,7 @@ func (manager *StackManager) buildDeployerParams(stackPayload edge.StackPayload,
 	stack.Namespace = stackPayload.Namespace
 	stack.EdgeUpdateID = stackPayload.EdgeUpdateID
 	stack.HelmConfig = stackPayload.HelmConfig
-	stack.FileFolder = getStackFileFolder(stack)
+	stack.FileFolder = getStackFileFolder(stack, manager.stackScope)
 
 	// When to force recreate the stack
 	// 1. When the stack is updated by GitOps with the ForceUpdate flag set to true

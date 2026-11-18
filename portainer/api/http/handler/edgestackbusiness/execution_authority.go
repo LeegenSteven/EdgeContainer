@@ -21,6 +21,7 @@ import (
 	"github.com/portainer/portainer/api/dataservices"
 	"github.com/portainer/portainer/api/edge"
 	"github.com/portainer/portainer/api/edgestack"
+	"github.com/portainer/portainer/pkg/libstack"
 )
 
 type leaseAuthorityView struct {
@@ -86,24 +87,33 @@ func executionLeaseMatches(view leaseAuthorityView, value edgestack.DeliveryExec
 
 type executionCapability struct {
 	value string
+	scope string
 	at    time.Time
 }
 
 type deliveryExecutionAuthority struct {
-	mounts       *mountProvider
-	adminAccess  func(http.Handler) http.Handler
-	service      *edgestack.Service
-	store        dataservices.DataStore
-	baseURL      string
-	tokenFile    string
-	devices      map[string]string
-	client       *http.Client
-	mu           sync.Mutex
-	capabilities map[int]executionCapability
+	executionScope string
+	mounts         *mountProvider
+	adminAccess    func(http.Handler) http.Handler
+	service        *edgestack.Service
+	store          dataservices.DataStore
+	baseURL        string
+	tokenFile      string
+	devices        map[string]string
+	client         *http.Client
+	mu             sync.Mutex
+	capabilities   map[int]executionCapability
 }
 
 func newDeliveryExecutionAuthority(service *edgestack.Service, store dataservices.DataStore) (*deliveryExecutionAuthority, error) {
-	authority := &deliveryExecutionAuthority{service: service, store: store, devices: map[string]string{}, capabilities: map[int]executionCapability{}, tokenFile: os.Getenv("EDGESTACK_LEASE_TOKEN_FILE"), baseURL: strings.TrimRight(os.Getenv("EDGESTACK_LEASE_URL"), "/")}
+	scope := os.Getenv("EDGESTACK_EXECUTION_SCOPE")
+	if err := libstack.ValidateEdgeStackScope(scope); err != nil {
+		return nil, err
+	}
+	if err := service.VerifyDeliveryExecutionScope(scope); err != nil {
+		return nil, err
+	}
+	authority := &deliveryExecutionAuthority{executionScope: scope, service: service, store: store, devices: map[string]string{}, capabilities: map[int]executionCapability{}, tokenFile: os.Getenv("EDGESTACK_LEASE_TOKEN_FILE"), baseURL: strings.TrimRight(os.Getenv("EDGESTACK_LEASE_URL"), "/")}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.Proxy = nil
 	authority.client = &http.Client{Timeout: 4 * time.Second, Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error { return errors.New("lease_authority_redirect_refused") }}
@@ -132,6 +142,9 @@ func newDeliveryExecutionAuthority(service *edgestack.Service, store dataservice
 
 func (a *deliveryExecutionAuthority) call(ctx context.Context, method, path, key string, body any) (leaseAuthorityView, error) {
 	var result leaseAuthorityView
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return result, err
+	}
 	if a.baseURL == "" || a.tokenFile == "" {
 		return result, errors.New("shared_lease_authority_unconfigured")
 	}
@@ -181,18 +194,30 @@ func (a *deliveryExecutionAuthority) call(ctx context.Context, method, path, key
 	return result, nil
 }
 
-func (a *deliveryExecutionAuthority) ObserveCapability(_ context.Context, endpoint int, value string) error {
+func (a *deliveryExecutionAuthority) ExecutionScope() string { return a.executionScope }
+
+func (a *deliveryExecutionAuthority) ObserveCapability(_ context.Context, endpoint int, value, scope string) error {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.capabilities[endpoint] = executionCapability{value: value, at: time.Now()}
+	if libstack.ValidateEdgeStackScope(scope) != nil || scope != a.executionScope {
+		delete(a.capabilities, endpoint)
+		return errors.New("execution_scope_mismatch")
+	}
+	a.capabilities[endpoint] = executionCapability{value: value, scope: scope, at: time.Now()}
 	return nil
 }
 func (a *deliveryExecutionAuthority) Preview(_ context.Context, endpointID int) error {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return err
+	}
 	a.mu.Lock()
 	capability := a.capabilities[endpointID]
 	a.mu.Unlock()
 	endpoint, err := a.store.Endpoint().Endpoint(portainer.EndpointID(endpointID))
-	if err != nil || endpoint.Type != portainer.EdgeAgentOnDockerEnvironment || capability.value != edge.ExecutionGrantsCapability || time.Since(capability.at) > 2*time.Minute {
+	if err != nil || endpoint.Type != portainer.EdgeAgentOnDockerEnvironment || capability.value != edge.ExecutionGrantsCapability || capability.scope != a.executionScope || time.Since(capability.at) > 2*time.Minute {
 		return errors.New("execution_capable_edge_agent_required")
 	}
 	if a.baseURL == "" || a.tokenFile == "" || len(a.devices) == 0 {
@@ -286,6 +311,9 @@ func (a *deliveryExecutionAuthority) Prepare(ctx context.Context, operationID st
 }
 
 func (a *deliveryExecutionAuthority) Payload(ctx context.Context, endpoint, stack int) (bool, *edge.ExecutionGrant, error) {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return true, nil, err
+	}
 	binding, known, err := a.service.DeliveryExecutionBinding(endpoint, stack)
 	if err != nil {
 		return true, nil, err
@@ -317,6 +345,9 @@ func (a *deliveryExecutionAuthority) Payload(ctx context.Context, endpoint, stac
 }
 
 func (a *deliveryExecutionAuthority) Verify(ctx context.Context, endpointID, stackID int, action string, grant edge.ExecutionGrant) error {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return err
+	}
 	if err := grant.Validate(grant.ExpectedStackVersion, action, time.Now()); err != nil {
 		return err
 	}

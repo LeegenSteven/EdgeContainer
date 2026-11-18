@@ -13,6 +13,7 @@ import (
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/dataservices"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 )
 
 // ExecutionGrantCheck must compare the whole grant with the persisted managed
@@ -23,9 +24,18 @@ type ExecutionGrantCheck func(context.Context, int, int, string, edge.ExecutionG
 // NewExecutionGrantHandler authenticates the existing Edge identifier and then
 // delegates lease validation to the model-deployment control plane. Mount this
 // exact path before any broader endpoint-edge route.
-func NewExecutionGrantHandler(store dataservices.DataStore, verify ExecutionGrantCheck) http.Handler {
+func NewExecutionGrantHandler(store dataservices.DataStore, verify ExecutionGrantCheck, scopes ...string) http.Handler {
+	expectedScope := ""
+	if len(scopes) == 1 {
+		expectedScope = scopes[0]
+	}
 	router := mux.NewRouter()
 	router.HandleFunc("/api/endpoints/{id}/edge/stacks/{stackId}/execution/verify", func(w http.ResponseWriter, r *http.Request) {
+		scope := r.Header.Get(libstack.EdgeStackExecutionScopeHeader)
+		if len(scopes) > 1 || len(r.Header.Values(libstack.EdgeStackExecutionScopeHeader)) > 1 || libstack.ValidateEdgeStackScope(expectedScope) != nil || libstack.ValidateEdgeStackScope(scope) != nil || scope != expectedScope {
+			http.Error(w, "execution_scope_mismatch", http.StatusForbidden)
+			return
+		}
 		endpointID, e1 := strconv.Atoi(mux.Vars(r)["id"])
 		stackID, e2 := strconv.Atoi(mux.Vars(r)["stackId"])
 		if e1 != nil || e2 != nil || endpointID < 1 || stackID < 1 {

@@ -65,9 +65,10 @@ type (
 	}
 
 	EdgeStack struct {
-		ID       int
-		Name     string
-		ExitCode int
+		ID         int
+		Name       string
+		ExitCode   int
+		OwnerScope string
 	}
 
 	EdgeMetaFields struct {
@@ -94,6 +95,7 @@ type (
 		EdgeAsyncMode                bool
 		EdgeKey                      string
 		EdgeID                       string
+		EdgeStackScope               string
 		EdgeUIServerAddr             string
 		EdgeUIServerPort             string
 		EdgeInactivityTimeout        string

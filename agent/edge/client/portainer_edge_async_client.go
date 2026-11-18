@@ -20,6 +20,7 @@ import (
 	aos "github.com/portainer/agent/os"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 	pkgmetrics "github.com/portainer/portainer/pkg/metrics"
 
 	"github.com/docker/docker/api/types"
@@ -68,6 +69,7 @@ type PortainerAsyncClient struct {
 	createSnapshotFn           DockerSnapshotter
 	createKubernetesSnapshotFn KubernetesSnapshotter
 	gpuOperator                bool
+	executionScope             string
 }
 
 // NewPortainerAsyncClient returns a pointer to a new PortainerAsyncClient instance
@@ -103,6 +105,7 @@ func NewPortainerAsyncClient(
 		createSnapshotFn:           clientOpts.dockerSnapshotter,
 		createKubernetesSnapshotFn: kubernetes.CreateSnapshot,
 		gpuOperator:                clientOpts.gpuOperator,
+		executionScope:             clientOpts.executionScope,
 	}
 }
 
@@ -401,6 +404,7 @@ func (client *PortainerAsyncClient) executeAsyncRequest(payload AsyncRequest, po
 	req.Header.Set(agent.HTTPResponseUpdateIDHeaderName, strconv.Itoa(client.metaFields.UpdateID))
 	req.Header.Set(agent.HTTPResponseAgentPlatform, strconv.Itoa(int(client.agentPlatformIdentifier)))
 	req.Header.Set(agent.HTTPResponseAgentGPUOperator, strconv.FormatBool(client.gpuOperator))
+	req.Header.Set(libstack.EdgeStackExecutionScopeHeader, client.executionScope)
 
 	// Send container engine info only during initialization (endpointID == 0)
 	if client.getEndpointIDFn() == 0 {

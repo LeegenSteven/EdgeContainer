@@ -8,9 +8,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"net/url"
 	"os"
+	"path"
 	"sort"
 	"strconv"
 	"strings"
@@ -307,12 +307,20 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 	tick := time.NewTicker(2 * time.Second)
 	defer tick.Stop()
 	stoppedReads := 0
+	identity, err := p.mounts.containerTarget(task)
+	if err != nil {
+		return err
+	}
 	for {
 		client, err := p.mounts.newClient(ctx, task)
 		if err == nil && client != nil {
-			rows, e := client.ContainerList(ctx, container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", edgeStackLabel+"="+strconv.Itoa(task.Target.StackID)), filters.Arg("label", composeServiceLabel+"="+task.Target.ServiceID))})
+			rows, e := client.ContainerList(ctx, container.ListOptions{All: true, Filters: identity.filters()})
+			stopped := false
+			if e == nil {
+				stopped, e = inspectExecutionContainersStopped(ctx, client, rows, identity)
+			}
 			client.Close()
-			if e == nil && deliveryContainersStopped(rows, task.Target) {
+			if e == nil && stopped {
 				stoppedReads++
 				status, statusErr := p.store.EdgeStackStatus().Read(portainer.EdgeStackID(task.Target.StackID), portainer.EndpointID(task.Target.EndpointID))
 				if stoppedReads >= 2 && statusErr == nil {
@@ -325,6 +333,8 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 			} else {
 				stoppedReads = 0
 			}
+		} else {
+			stoppedReads = 0
 		}
 		select {
 		case <-ctx.Done():
@@ -337,8 +347,13 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 // Paused/restarting/created containers still occupy the target. An empty or
 // exited-only result is safe only after the new desired version is acknowledged.
 func deliveryContainersStopped(rows []container.Summary, target edgestack.Target) bool {
+	identity, err := containerTarget("", target)
+	return err == nil && executionContainersStopped(rows, identity)
+}
+
+func executionContainersStopped(rows []container.Summary, identity executionContainerTarget) bool {
 	for _, row := range rows {
-		if row.Labels[edgeStackLabel] != strconv.Itoa(target.StackID) || row.Labels[composeServiceLabel] != target.ServiceID {
+		if !identity.matches(row.Labels) {
 			return false
 		}
 		if row.State != "exited" && row.State != "dead" {
@@ -348,8 +363,8 @@ func deliveryContainersStopped(rows []container.Summary, target edgestack.Target
 	return true
 }
 
-// Scoped observer credentials travel as a Compose secret, never an image layer
-// or an environment value. The source grants model observation for this task.
+// Scoped observer credentials travel as an inline Compose config copied into
+// the runtime container, never an image layer or an environment value.
 func deliveryObserverCompose(compose, serviceID string, spec edgestack.DeliveryProvisionSpec, serverURL string) (string, error) {
 	if spec.ObserverSourceID == "" || spec.ObserverToken == "" {
 		return "", errors.New("delivery_observer_credential_required")
@@ -366,6 +381,25 @@ func deliveryObserverCompose(compose, serviceID string, spec edgestack.DeliveryP
 	if mappingValue(service, "healthcheck") == nil {
 		return "", errors.New("delivery_healthcheck_required")
 	}
+	// Compose copies inline configs into the container root filesystem. It
+	// cannot perform that operation with read_only=true. Refuse inheritance or
+	// unresolved values rather than overlooking a read-only setting from a merge.
+	if service.Anchor != "" || mappingValue(service, "<<") != nil {
+		return "", errors.New("delivery_observer_service_inheritance_unsupported")
+	}
+	if readOnly := mappingValue(service, "read_only"); readOnly != nil {
+		var value bool
+		if readOnly.Kind != yaml.ScalarNode || readOnly.Tag != "!!bool" || readOnly.Decode(&value) != nil || value {
+			return "", errors.New("delivery_observer_writable_root_required")
+		}
+	}
+	const configName = "edgestack-model-observer"
+	const tokenTarget = "/run/secrets/edgestack-model-observer"
+	for _, kind := range []string{"configs", "secrets"} {
+		if err := deliveryObserverFileReferences(mappingValue(service, kind), kind, configName, tokenTarget); err != nil {
+			return "", err
+		}
+	}
 	setMapping := func(parent *yaml.Node, key string, value *yaml.Node) {
 		for i := 0; i+1 < len(parent.Content); i += 2 {
 			if parent.Content[i].Value == key {
@@ -381,7 +415,7 @@ func deliveryObserverCompose(compose, serviceID string, spec edgestack.DeliveryP
 		env = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		setMapping(service, "environment", env)
 	}
-	values := map[string]string{"EDGESTACK_MODEL_OBSERVER_SOURCE_ID": spec.ObserverSourceID, "EDGESTACK_MODEL_OBSERVER_TOKEN_FILE": "/run/secrets/edgestack-model-observer", "EDGESTACK_SERVER_URL": strings.TrimRight(serverURL, "/"), "EDGESTACK_MODEL_OBSERVER_TASK_ID": spec.TaskID, "EDGESTACK_MODEL_OBSERVER_DEVICE_ID": spec.Device.ID, "EDGESTACK_MODEL_OBSERVER_SLOT": spec.Package.Slot}
+	values := map[string]string{"EDGESTACK_MODEL_OBSERVER_SOURCE_ID": spec.ObserverSourceID, "EDGESTACK_MODEL_OBSERVER_TOKEN_FILE": tokenTarget, "EDGESTACK_SERVER_URL": strings.TrimRight(serverURL, "/"), "EDGESTACK_MODEL_OBSERVER_TASK_ID": spec.TaskID, "EDGESTACK_MODEL_OBSERVER_DEVICE_ID": spec.Device.ID, "EDGESTACK_MODEL_OBSERVER_SLOT": spec.Package.Slot}
 	keys := make([]string, 0, len(values))
 	for key := range values {
 		keys = append(keys, key)
@@ -402,27 +436,82 @@ func deliveryObserverCompose(compose, serviceID string, spec edgestack.DeliveryP
 			return "", errors.New("delivery_observer_environment_invalid")
 		}
 	}
-	const secretName = "edgestack-model-observer"
-	secrets := mappingValue(root.Content[0], "secrets")
-	if secrets == nil {
-		secrets = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-		setMapping(root.Content[0], "secrets", secrets)
+	configs := mappingValue(root.Content[0], "configs")
+	if configs == nil {
+		configs = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		setMapping(root.Content[0], "configs", configs)
 	}
-	if mappingValue(secrets, secretName) != nil {
-		return "", errors.New("delivery_observer_secret_conflict")
+	if configs.Kind != yaml.MappingNode || configs.Anchor != "" || mappingValue(configs, "<<") != nil {
+		return "", errors.New("delivery_observer_config_invalid")
 	}
-	secret := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-	setMapping(secret, "content", scalar(spec.ObserverToken))
-	setMapping(secrets, secretName, secret)
-	mounts := mappingValue(service, "secrets")
+	if mappingValue(configs, configName) != nil {
+		return "", errors.New("delivery_observer_config_conflict")
+	}
+	config := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setMapping(config, "content", scalar(strings.ReplaceAll(spec.ObserverToken, "$", "$$")))
+	setMapping(configs, configName, config)
+	mounts := mappingValue(service, "configs")
 	if mounts == nil {
 		mounts = &yaml.Node{Kind: yaml.SequenceNode, Tag: "!!seq"}
-		setMapping(service, "secrets", mounts)
+		setMapping(service, "configs", mounts)
 	}
 	if mounts.Kind != yaml.SequenceNode {
-		return "", errors.New("delivery_observer_secret_mount_invalid")
+		return "", errors.New("delivery_observer_config_mount_invalid")
 	}
-	mounts.Content = append(mounts.Content, scalar(secretName))
+	reference := &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+	setMapping(reference, "source", scalar(configName))
+	setMapping(reference, "target", scalar(tokenTarget))
+	setMapping(reference, "uid", scalar("0"))
+	setMapping(reference, "gid", scalar("0"))
+	setMapping(reference, "mode", &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: strconv.Itoa(0o444)})
+	mounts.Content = append(mounts.Content, reference)
 	raw, err := yaml.Marshal(root)
 	return string(raw), err
+}
+
+// Do not overwrite a template's foreign config/secret or shadow its target.
+func deliveryObserverFileReferences(refs *yaml.Node, kind, name, target string) error {
+	if refs == nil {
+		return nil
+	}
+	if refs.Kind != yaml.SequenceNode {
+		return errors.New("delivery_observer_config_mount_invalid")
+	}
+	for _, ref := range refs.Content {
+		var source, destination string
+		switch ref.Kind {
+		case yaml.ScalarNode:
+			source = ref.Value
+		case yaml.MappingNode:
+			if ref.Anchor != "" || mappingValue(ref, "<<") != nil {
+				return errors.New("delivery_observer_config_mount_invalid")
+			}
+			src := mappingValue(ref, "source")
+			if src == nil || src.Kind != yaml.ScalarNode {
+				return errors.New("delivery_observer_config_mount_invalid")
+			}
+			source = src.Value
+			if dst := mappingValue(ref, "target"); dst != nil {
+				if dst.Kind != yaml.ScalarNode {
+					return errors.New("delivery_observer_config_mount_invalid")
+				}
+				destination = dst.Value
+			}
+		default:
+			return errors.New("delivery_observer_config_mount_invalid")
+		}
+		if destination == "" {
+			destination = "/" + source
+			if kind == "secrets" {
+				destination = "/run/secrets/" + source
+			}
+		} else if !path.IsAbs(destination) && kind == "secrets" {
+			destination = "/run/secrets/" + destination
+		}
+		destination = path.Clean("/" + destination)
+		if source == name || destination == target || strings.HasPrefix(target, strings.TrimSuffix(destination, "/")+"/") {
+			return errors.New("delivery_observer_config_conflict")
+		}
+	}
+	return nil
 }

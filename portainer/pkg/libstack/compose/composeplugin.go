@@ -39,7 +39,11 @@ func (c *ComposeDeployer) withComposeService(
 	filePaths []string,
 	options libstack.Options,
 	composeFn func(api.Compose, *types.Project) error,
+	mutation ...bool,
 ) error {
+	if err := c.validateProjectScope(options.ProjectName); err != nil {
+		return err
+	}
 	return libstack.WithCli(ctx,
 		libstack.DockerCliOptions{Host: options.Host, Registries: options.Registries},
 		func(ctx context.Context, cli *command.DockerCli) error {
@@ -52,6 +56,16 @@ func (c *ComposeDeployer) withComposeService(
 			project, err := createProject(ctx, filePaths, options)
 			if err != nil {
 				return fmt.Errorf("failed to create compose project: %w", err)
+			}
+			if err := c.labelScopedProject(project, 0); err != nil {
+				return err
+			}
+			mutating := c.ownerScope != "" && len(mutation) == 1 && mutation[0]
+			if mutating {
+				project = project.WithoutUnnecessaryResources()
+				if err := c.verifyResourceScope(ctx, c.scopeResourceClient(cli), project.Name, project, false); err != nil {
+					return err
+				}
 			}
 
 			parallel := 0
@@ -66,14 +80,26 @@ func (c *ComposeDeployer) withComposeService(
 				composeService.MaxConcurrency(parallel)
 			}
 
-			return composeFn(composeService, project)
+			if err := composeFn(composeService, project); err != nil {
+				return err
+			}
+			if mutating {
+				return c.verifyResourceScope(ctx, c.scopeResourceClient(cli), project.Name, project, true)
+			}
+			return nil
 		})
 }
 
 // Deploy creates and starts containers
 func (c *ComposeDeployer) Deploy(ctx context.Context, filePaths []string, options libstack.DeployOptions) error {
-	return c.withComposeService(ctx, filePaths, options.Options, func(composeService api.Compose, project *types.Project) error {
+	if err := c.withComposeService(ctx, filePaths, options.Options, func(composeService api.Compose, project *types.Project) error {
 		addServiceLabels(project, false, options.EdgeStackID)
+		if err := c.labelScopedProject(project, options.EdgeStackID); err != nil {
+			return err
+		}
+		if err := c.verifyProjectScope(ctx, composeService, project.Name); err != nil {
+			return err
+		}
 
 		project = project.WithoutUnnecessaryResources()
 
@@ -106,16 +132,24 @@ func (c *ComposeDeployer) Deploy(ctx context.Context, filePaths []string, option
 			return fmt.Errorf("compose up operation failed: %w", err)
 		}
 
-		log.Info().Msg("Stack deployment successful")
-
 		return nil
-	})
+	}, true); err != nil {
+		return err
+	}
+	log.Info().Msg("Stack deployment successful")
+	return nil
 }
 
 // Run runs the given service just once, without considering dependencies
 func (c *ComposeDeployer) Run(ctx context.Context, filePaths []string, serviceName string, options libstack.RunOptions) error {
-	return c.withComposeService(ctx, filePaths, options.Options, func(composeService api.Compose, project *types.Project) error {
+	if err := c.withComposeService(ctx, filePaths, options.Options, func(composeService api.Compose, project *types.Project) error {
 		addServiceLabels(project, true, 0)
+		if err := c.labelScopedProject(project, 0); err != nil {
+			return err
+		}
+		if err := c.verifyProjectScope(ctx, composeService, project.Name); err != nil {
+			return err
+		}
 
 		for name, service := range project.Services {
 			if name == serviceName {
@@ -143,14 +177,19 @@ func (c *ComposeDeployer) Run(ctx context.Context, filePaths []string, serviceNa
 			return fmt.Errorf("compose run operation failed: %w", err)
 		}
 
-		log.Info().Msg("Stack run successful")
-
 		return nil
-	})
+	}, true); err != nil {
+		return err
+	}
+	log.Info().Msg("Stack run successful")
+	return nil
 }
 
 // Remove stops and removes containers
 func (c *ComposeDeployer) Remove(ctx context.Context, projectName string, filePaths []string, options libstack.RemoveOptions) error {
+	if err := c.validateProjectScope(projectName); err != nil {
+		return err
+	}
 	// WithCli replaces the context with Background internally, so we capture the
 	// caller's context here to preserve cancellation and the deployment timeout.
 	callerCtx := ctx
@@ -159,6 +198,12 @@ func (c *ComposeDeployer) Remove(ctx context.Context, projectName string, filePa
 		libstack.DockerCliOptions{Host: options.Host, Registries: options.Registries},
 		func(_ context.Context, cli *command.DockerCli) error {
 			composeService := c.createComposeServiceFn(cli)
+			if err := c.verifyProjectScope(callerCtx, composeService, projectName); err != nil {
+				return err
+			}
+			if err := c.verifyResourceScope(callerCtx, c.scopeResourceClient(cli), projectName, nil, false); err != nil {
+				return err
+			}
 
 			return composeService.Down(callerCtx, projectName, api.DownOptions{RemoveOrphans: true, Volumes: options.Volumes})
 		}); err != nil {
@@ -212,7 +257,7 @@ func (c *ComposeDeployer) Config(ctx context.Context, filePaths []string, option
 func (c *ComposeDeployer) GetExistingEdgeStacks(ctx context.Context) ([]libstack.EdgeStack, error) {
 	m := make(map[int]libstack.EdgeStack)
 
-	if err := c.withComposeService(ctx, nil, libstack.Options{}, func(composeService api.Compose, project *types.Project) error {
+	if err := c.withComposeService(ctx, nil, libstack.Options{ProjectName: libstack.EdgeStackProjectName(c.ownerScope, "")}, func(composeService api.Compose, project *types.Project) error {
 		stacks, err := composeService.List(ctx, api.ListOptions{
 			All: true,
 		})
@@ -227,7 +272,19 @@ func (c *ComposeDeployer) GetExistingEdgeStacks(ctx context.Context) ([]libstack
 			}
 
 			for _, cs := range summary {
-				if sid, ok := cs.Labels[PortainerEdgeStackLabel]; ok {
+				if cs.Labels[libstack.EdgeStackScopeLabel] != c.ownerScope {
+					continue
+				}
+				idLabel := PortainerEdgeStackLabel
+				if c.ownerScope != "" {
+					if _, legacy := cs.Labels[PortainerEdgeStackLabel]; legacy {
+						continue
+					}
+					idLabel = libstack.EdgeStackScopedIDLabel
+				} else if _, scoped := cs.Labels[libstack.EdgeStackScopedIDLabel]; scoped {
+					continue
+				}
+				if sid, ok := cs.Labels[idLabel]; ok {
 					id, err := strconv.Atoi(sid)
 					if err != nil {
 						return err
@@ -236,11 +293,18 @@ func (c *ComposeDeployer) GetExistingEdgeStacks(ctx context.Context) ([]libstack
 					if cs.Labels[api.ProjectLabel] == "" {
 						return errors.New("invalid project label")
 					}
+					if err := c.validateProjectScope(cs.Labels[api.ProjectLabel]); err != nil {
+						return err
+					}
+					if existing, ok := m[id]; c.ownerScope != "" && ok && existing.Name != cs.Labels[api.ProjectLabel] {
+						return errors.New("duplicate edge stack ID within execution scope")
+					}
 
 					m[id] = libstack.EdgeStack{
-						ID:       id,
-						Name:     cs.Labels[api.ProjectLabel],
-						ExitCode: cs.ExitCode,
+						ID:         id,
+						Name:       cs.Labels[api.ProjectLabel],
+						ExitCode:   cs.ExitCode,
+						OwnerScope: c.ownerScope,
 					}
 				}
 			}

@@ -4,14 +4,12 @@ import (
 	"context"
 	"errors"
 	"path"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
 
 	"github.com/distribution/reference"
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/mount"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/dataservices"
@@ -42,6 +40,43 @@ type mountSnapshot struct {
 	modelEnvironment map[string]string
 	observedAt       time.Time
 	reason           string
+}
+
+type executionContainerObservation struct {
+	id      string
+	stopped bool
+}
+
+// A list result is a discovery hint. Stop and release evidence must be based on
+// a fresh inspect of every returned immutable ID, including legacy/exited rows.
+func inspectExecutionContainers(ctx context.Context, client mountClient, rows []container.Summary, identity executionContainerTarget) ([]executionContainerObservation, error) {
+	observations := make([]executionContainerObservation, 0, len(rows))
+	for _, row := range rows {
+		if row.ID == "" || !identity.matches(row.Labels) {
+			return nil, errors.New("container_identity_changed")
+		}
+		actual, err := client.ContainerInspect(ctx, row.ID)
+		if err != nil || actual.ContainerJSONBase == nil || actual.ID != row.ID || actual.Config == nil || actual.State == nil || !identity.matches(actual.Config.Labels) {
+			return nil, errors.New("container_identity_changed")
+		}
+		state := actual.State
+		stopped := (state.Status == "exited" || state.Status == "dead") && !state.Running && !state.Paused && !state.Restarting
+		observations = append(observations, executionContainerObservation{id: row.ID, stopped: stopped})
+	}
+	return observations, nil
+}
+
+func inspectExecutionContainersStopped(ctx context.Context, client mountClient, rows []container.Summary, identity executionContainerTarget) (bool, error) {
+	observations, err := inspectExecutionContainers(ctx, client, rows, identity)
+	if err != nil {
+		return false, err
+	}
+	for _, observation := range observations {
+		if !observation.stopped {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // Validation additionally proves the requested immutable image and approved
@@ -91,17 +126,25 @@ type mountCacheEntry struct {
 	expires  time.Time
 }
 type mountProvider struct {
-	newClient func(context.Context, edgestack.Task) (mountClient, error)
-	now       func() time.Time
-	mu        sync.Mutex
-	cache     map[mountCacheKey]*mountCacheEntry
+	newClient      func(context.Context, edgestack.Task) (mountClient, error)
+	executionScope string
+	stackName      func(int) (string, error)
+	now            func() time.Time
+	mu             sync.Mutex
+	cache          map[mountCacheKey]*mountCacheEntry
 }
 
-func newMountProvider(store dataservices.DataStore, factory *dockerclient.ClientFactory) edgestack.MountProvider {
+func newMountProvider(store dataservices.DataStore, factory *dockerclient.ClientFactory, scope string) edgestack.MountProvider {
 	if factory == nil {
 		return nil
 	}
-	return &mountProvider{now: time.Now, cache: make(map[mountCacheKey]*mountCacheEntry), newClient: func(ctx context.Context, task edgestack.Task) (mountClient, error) {
+	return &mountProvider{executionScope: scope, stackName: func(id int) (string, error) {
+		stack, err := store.EdgeStack().EdgeStack(portainer.EdgeStackID(id))
+		if err != nil {
+			return "", err
+		}
+		return stack.Name, nil
+	}, now: time.Now, cache: make(map[mountCacheKey]*mountCacheEntry), newClient: func(ctx context.Context, task edgestack.Task) (mountClient, error) {
 		if err := ctx.Err(); err != nil {
 			return nil, err
 		}
@@ -177,6 +220,13 @@ func (p *mountProvider) snapshot(ctx context.Context, task edgestack.Task) mount
 	if task.Target.EndpointID <= 0 || task.Target.StackID <= 0 || task.Target.ServiceID == "" {
 		return mountSnapshot{reason: "mount_target_unavailable"}
 	}
+	if p.executionScope != "" && p.stackName != nil {
+		name, err := p.stackName(task.Target.StackID)
+		if err != nil || name == "" {
+			return mountSnapshot{reason: "container_scope_target_unavailable"}
+		}
+		task.Target.StackName = name
+	}
 	key := mountCacheKey{task.Target, task.Revision}
 	p.mu.Lock()
 	entry, exists := p.cache[key]
@@ -226,6 +276,10 @@ func (p *mountProvider) snapshot(ctx context.Context, task edgestack.Task) mount
 }
 
 func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountSnapshot {
+	identity, err := p.containerTarget(task)
+	if err != nil {
+		return mountSnapshot{reason: "container_scope_target_unavailable"}
+	}
 	client, err := p.newClient(ctx, task)
 	if err != nil {
 		return mountSnapshot{reason: mountErrorReason(ctx)}
@@ -237,15 +291,16 @@ func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountS
 	if ctx.Err() != nil {
 		return mountSnapshot{reason: "mount_query_timeout"}
 	}
-	stackID := strconv.Itoa(task.Target.StackID)
-	options := container.ListOptions{Filters: filters.NewArgs(filters.Arg("label", edgeStackLabel+"="+stackID), filters.Arg("label", composeServiceLabel+"="+task.Target.ServiceID), filters.Arg("status", "running"))}
+	query := identity.filters()
+	query.Add("status", "running")
+	options := container.ListOptions{Filters: query}
 	rows, err := client.ContainerList(ctx, options)
 	if err != nil {
 		return mountSnapshot{reason: mountErrorReason(ctx)}
 	}
 	var running []container.Summary
 	for _, row := range rows {
-		if row.Labels[edgeStackLabel] == stackID && row.Labels[composeServiceLabel] == task.Target.ServiceID && row.State == "running" {
+		if identity.matches(row.Labels) && row.State == "running" {
 			running = append(running, row)
 		}
 	}
@@ -259,7 +314,7 @@ func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountS
 	if err != nil {
 		return mountSnapshot{reason: mountErrorReason(ctx)}
 	}
-	if actual.ContainerJSONBase == nil || actual.ID != running[0].ID || actual.Config == nil || actual.Config.Labels[edgeStackLabel] != stackID || actual.Config.Labels[composeServiceLabel] != task.Target.ServiceID {
+	if actual.ContainerJSONBase == nil || actual.ID != running[0].ID || actual.Config == nil || !identity.matches(actual.Config.Labels) {
 		return mountSnapshot{reason: "container_identity_mismatch"}
 	}
 	if actual.State == nil || !actual.State.Running {

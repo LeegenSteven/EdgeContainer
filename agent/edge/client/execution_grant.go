@@ -11,6 +11,7 @@ import (
 
 	"github.com/portainer/agent"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 )
 
 // ExecutionGrantVerifier is optional so legacy/unmanaged clients keep their
@@ -41,6 +42,7 @@ func (client *PortainerEdgeClient) VerifyExecutionGrant(ctx context.Context, sta
 	}
 	request.Header.Set(agent.HTTPEdgeIdentifierHeaderName, client.edgeID)
 	request.Header.Set(edge.ExecutionGrantsHeader, edge.ExecutionGrantsCapability)
+	request.Header.Set(libstack.EdgeStackExecutionScopeHeader, client.executionScope)
 	request.Header.Set("Content-Type", "application/json")
 	response, err := client.httpClient.Do(request)
 	if err != nil {

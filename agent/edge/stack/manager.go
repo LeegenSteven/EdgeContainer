@@ -14,6 +14,7 @@ import (
 	"github.com/portainer/agent/exec"
 	"github.com/portainer/agent/kubernetes"
 	"github.com/portainer/portainer/api/edge"
+	"github.com/portainer/portainer/pkg/libstack"
 
 	"github.com/rs/zerolog/log"
 )
@@ -37,6 +38,7 @@ const edgeUpdateStackNamePrefix = "edge-update-schedule-"
 type StackManager struct {
 	engineType      engineType
 	edgeID          string
+	stackScope      string
 	stacks          map[edgeStackID]*edgeStack
 	stopSignal      chan struct{}
 	deployer        deployer.Deployer
@@ -59,6 +61,26 @@ func NewStackManager(cli client.PortainerClient, config *agent.AWSConfig, edgeID
 		kubeClient:      kubeClient,
 		executionFences: &executionFenceStore{path: filepath.Join(agent.DefaultDataPath, "edgestack-execution-fences.json")},
 	}
+}
+
+// SetStackScope is configured before engine initialization or polling. A live
+// manager cannot switch namespaces and carry adopted stacks into a new scope.
+func (manager *StackManager) SetStackScope(scope string) error {
+	if err := libstack.ValidateEdgeStackScope(scope); err != nil {
+		return err
+	}
+	manager.mu.Lock()
+	defer manager.mu.Unlock()
+	if manager.stopSignal != nil || len(manager.stacks) != 0 || manager.engineType != 0 {
+		return fmt.Errorf("cannot change edge stack scope after initialization")
+	}
+	manager.stackScope = scope
+	name := "edgestack-execution-fences.json"
+	if scope != "" {
+		name = "edgestack-execution-fences-" + scope + ".json"
+	}
+	manager.executionFences = &executionFenceStore{path: filepath.Join(agent.DefaultDataPath, name)}
+	return nil
 }
 
 func (manager *StackManager) Start() error {
@@ -113,6 +135,9 @@ func (manager *StackManager) ResetStacks() {
 }
 
 func (manager *StackManager) SetEngineType(engineTyp engineType) error {
+	if manager.stackScope != "" && engineTyp != EngineTypeDockerStandalone {
+		return fmt.Errorf("scoped edge stacks require Docker standalone")
+	}
 	if engineTyp == manager.engineType {
 		return nil
 	}
@@ -139,6 +164,9 @@ func (manager *StackManager) LoadExistingEdgeStacks(ctx context.Context) error {
 
 	manager.mu.Lock()
 	for _, s := range edgeStacks {
+		if s.OwnerScope != manager.stackScope {
+			continue
+		}
 		if _, found := manager.stacks[edgeStackID(s.ID)]; found {
 			continue
 		}
@@ -154,6 +182,9 @@ func (manager *StackManager) LoadExistingEdgeStacks(ctx context.Context) error {
 			Status:           StatusPending,
 			EdgeUpdateFailed: edgeUpdateFailed,
 		}
+		if manager.stackScope != "" {
+			manager.stacks[edgeStackID(s.ID)].FileFolder = getStackFileFolder(manager.stacks[edgeStackID(s.ID)], manager.stackScope)
+		}
 	}
 	manager.mu.Unlock()
 
@@ -168,6 +199,9 @@ func (manager *StackManager) LoadExistingPortainerUpdaterEdgeStack(ctx context.C
 	}
 
 	for _, s := range edgeStacks {
+		if s.OwnerScope != manager.stackScope {
+			continue
+		}
 		edgeUpdateIDString, isPortainerUpdaterEdgeStack := strings.CutPrefix(s.Name, edgeUpdateStackNamePrefix)
 		if isPortainerUpdaterEdgeStack {
 			edgeUpdateID, err := strconv.Atoi(edgeUpdateIDString)
@@ -200,7 +234,7 @@ func (manager *StackManager) LoadExistingPortainerUpdaterEdgeStack(ctx context.C
 func (manager *StackManager) buildDeployerService(engineStatus engineType) (deployer.Deployer, error) {
 	switch engineStatus {
 	case EngineTypeDockerStandalone:
-		return exec.NewDockerComposeStackService(), nil
+		return exec.NewScopedDockerComposeStackService(manager.stackScope)
 	case EngineTypeDockerSwarm:
 		return exec.NewDockerSwarmStackService(), nil
 	case EngineTypeKubernetes:

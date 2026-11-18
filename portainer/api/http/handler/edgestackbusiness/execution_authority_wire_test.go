@@ -60,7 +60,7 @@ func TestSharedLeaseTimestampWireFormats(t *testing.T) {
 
 func TestRealLeaseAcquireAndHeartbeatNumericFixtures(t *testing.T) {
 	a, task, _ := executionAuthorityFixture(t)
-	require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability))
+	require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability, ""))
 	operation := "wire-operation"
 	expiry := float64(time.Now().Add(120*time.Second).UnixMilli()) / 1000
 	a.client.Transport = executionRoundTripper(func(r *http.Request) (*http.Response, error) {
@@ -99,7 +99,7 @@ func TestRealLeaseAcquireRejectsForeignOrIncompleteIdentity(t *testing.T) {
 	for _, field := range []string{"owner_agent", "purpose", "job_id", "resource_groups", "fencing_tokens", "expires_at"} {
 		t.Run(field, func(t *testing.T) {
 			a, task, _ := executionAuthorityFixture(t)
-			require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability))
+			require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability, ""))
 			a.client.Transport = executionRoundTripper(func(r *http.Request) (*http.Response, error) {
 				view := realLeaseFixture("active", "lease-wire", executionAuthorityJob("op"), 4, float64(time.Now().Add(time.Minute).Unix()))
 				switch field {
@@ -155,7 +155,7 @@ func TestRealLeaseVerifyRequiresActualValidIdentityAndLiveExpiry(t *testing.T) {
 
 func TestWaitingLeaseIsCancelledBeforeAnyGrantIsPublished(t *testing.T) {
 	a, task, _ := executionAuthorityFixture(t)
-	require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability))
+	require.NoError(t, a.ObserveCapability(context.Background(), 4, edge.ExecutionGrantsCapability, ""))
 	cancelled := false
 	a.client.Transport = executionRoundTripper(func(r *http.Request) (*http.Response, error) {
 		if strings.HasSuffix(r.URL.Path, "/release") {

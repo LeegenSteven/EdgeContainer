@@ -125,10 +125,11 @@ type setEndpointIDFn func(portainer.EndpointID)
 type getEndpointIDFn func() portainer.EndpointID
 
 // NewPortainerClient returns a pointer to a new PortainerClient instance
-func NewPortainerClient(serverAddress string, setEIDFn setEndpointIDFn, getEIDFn getEndpointIDFn, edgeID string, edgeKey string, edgeAsyncMode bool, agentPlatform agent.ContainerPlatform, metaFields agent.EdgeMetaFields, httpClient *edgeHTTPClient, gpuOperator bool) PortainerClient {
+func NewPortainerClient(serverAddress string, setEIDFn setEndpointIDFn, getEIDFn getEndpointIDFn, edgeID string, edgeKey string, edgeAsyncMode bool, agentPlatform agent.ContainerPlatform, metaFields agent.EdgeMetaFields, httpClient *edgeHTTPClient, gpuOperator bool, opts ...Option) PortainerClient {
+	opts = append(opts, WithGPUOperator(gpuOperator))
 	if edgeAsyncMode {
-		return NewPortainerAsyncClient(serverAddress, setEIDFn, getEIDFn, edgeID, edgeKey, agentPlatform, metaFields, httpClient, WithGPUOperator(gpuOperator))
+		return NewPortainerAsyncClient(serverAddress, setEIDFn, getEIDFn, edgeID, edgeKey, agentPlatform, metaFields, httpClient, opts...)
 	}
 
-	return NewPortainerEdgeClient(serverAddress, setEIDFn, getEIDFn, edgeID, agentPlatform, metaFields, httpClient, WithGPUOperator(gpuOperator))
+	return NewPortainerEdgeClient(serverAddress, setEIDFn, getEIDFn, edgeID, agentPlatform, metaFields, httpClient, opts...)
 }

@@ -26,12 +26,16 @@ func executionResponse(body any) *http.Response {
 	return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(string(raw)))}
 }
 
-func executionAuthorityFixture(t *testing.T) (*deliveryExecutionAuthority, edgestack.Task, string) {
+func executionAuthorityFixture(t *testing.T, scopes ...string) (*deliveryExecutionAuthority, edgestack.Task, string) {
 	t.Helper()
 	d, store, _ := dispatcherFixture(t)
 	_ = d
 	path := filepath.Join(t.TempDir(), "business.db")
-	s, err := edgestack.Open(path, edgestack.Options{})
+	scope := ""
+	if len(scopes) != 0 {
+		scope = scopes[0]
+	}
+	s, err := edgestack.Open(path, edgestack.Options{ExecutionScope: scope})
 	require.NoError(t, err)
 	t.Cleanup(func() { s.Close() })
 	task := edgestack.Task{ID: "test-task", Name: "Validation", DeviceID: "device", Kind: "voice", TestTask: true, Target: edgestack.Target{EndpointID: 4, StackID: 1, ServiceID: "voice"}}
@@ -40,7 +44,7 @@ func executionAuthorityFixture(t *testing.T) (*deliveryExecutionAuthority, edges
 	require.NoError(t, store.EdgeStack().Create(stack.ID, stack))
 	token := filepath.Join(t.TempDir(), "lease-token")
 	require.NoError(t, os.WriteFile(token, []byte(strings.Repeat("s", 32)), 0600))
-	a := &deliveryExecutionAuthority{service: s, store: store, baseURL: "http://lease.invalid", tokenFile: token, devices: map[string]string{"device": "board"}, client: &http.Client{}, capabilities: map[int]executionCapability{}}
+	a := &deliveryExecutionAuthority{executionScope: scope, service: s, store: store, baseURL: "http://lease.invalid", tokenFile: token, devices: map[string]string{"device": "board"}, client: &http.Client{}, capabilities: map[int]executionCapability{}}
 	return a, task, path
 }
 
@@ -82,10 +86,27 @@ type executionStopClient struct {
 	stops int
 }
 
-func (c *executionStopClient) ContainerStop(_ context.Context, _ string, _ container.StopOptions) error {
+func (c *executionStopClient) ContainerStop(_ context.Context, id string, _ container.StopOptions) error {
 	c.stops++
 	c.rows[0].State = "exited"
+	if c.actual.ContainerJSONBase != nil && c.actual.ID == id {
+		c.actual.State = &container.State{Status: "exited"}
+	}
 	return nil
+}
+
+func (c *executionStopClient) ContainerInspect(ctx context.Context, id string) (container.InspectResponse, error) {
+	if c.actual.Config != nil || c.inspectErr != nil {
+		return c.fakeMountClient.ContainerInspect(ctx, id)
+	}
+	c.inspects.Add(1)
+	c.inspectedID = id
+	for _, row := range c.rows {
+		if row.ID == id {
+			return container.InspectResponse{ContainerJSONBase: &container.ContainerJSONBase{ID: id, State: &container.State{Status: row.State, Running: row.State == "running" || row.State == "paused", Paused: row.State == "paused", Restarting: row.State == "restarting"}}, Config: &container.Config{Labels: row.Labels}}, nil
+		}
+	}
+	return container.InspectResponse{}, nil
 }
 
 func TestAdministratorRecoveryFencesOldEpochAndStopsPausedContainer(t *testing.T) {

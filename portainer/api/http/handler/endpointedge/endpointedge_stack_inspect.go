@@ -34,6 +34,9 @@ var edgeStackSingleFlightGroup = singleflight.Group{}
 // @failure 404
 // @router /endpoints/{id}/edge/stacks/{stackId} [get]
 func (handler *Handler) endpointEdgeStackInspect(w http.ResponseWriter, r *http.Request) *httperror.HandlerError {
+	if !handler.executionScopeMatches(r) {
+		return httperror.Forbidden("Execution scope mismatch", nil)
+	}
 	endpoint, err := middlewares.FetchEndpoint(r)
 	if err != nil {
 		return httperror.BadRequest("Unable to find an environment on request context", err)

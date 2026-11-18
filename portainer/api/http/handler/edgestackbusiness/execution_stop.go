@@ -8,12 +8,10 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 
 	"github.com/docker/docker/api/types/container"
-	"github.com/docker/docker/api/types/filters"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/edgestack"
 )
@@ -117,6 +115,9 @@ func (a *deliveryExecutionAuthority) adminExecutionStop(w http.ResponseWriter, r
 }
 
 func (a *deliveryExecutionAuthority) previewExecutionStop(ctx context.Context, group string, actor int) (edgestack.DeliveryExecutionStopPlan, error) {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return edgestack.DeliveryExecutionStopPlan{}, err
+	}
 	var plan edgestack.DeliveryExecutionStopPlan
 	lease, known, err := a.service.DeliveryExecutionLease(group)
 	if err != nil || !known || lease.Released {
@@ -188,6 +189,9 @@ func (a *deliveryExecutionAuthority) previewExecutionStop(ctx context.Context, g
 }
 
 func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, plan *edgestack.DeliveryExecutionStopPlan) error {
+	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
+		return err
+	}
 	if a.mounts == nil {
 		return errors.New("container_inspection_unavailable")
 	}
@@ -330,6 +334,10 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 }
 
 func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context, task edgestack.Task, lease edgestack.DeliveryExecutionLease) error {
+	identity, err := a.mounts.containerTarget(task)
+	if err != nil {
+		return err
+	}
 	bounded, cancel := context.WithTimeout(ctx, 40*time.Second)
 	defer cancel()
 	client, err := a.mounts.newClient(bounded, task)
@@ -341,8 +349,7 @@ func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context
 	if !ok {
 		return errors.New("container_stop_unavailable")
 	}
-	id := strconv.Itoa(task.Target.StackID)
-	query := container.ListOptions{All: true, Filters: filters.NewArgs(filters.Arg("label", edgeStackLabel+"="+id), filters.Arg("label", composeServiceLabel+"="+task.Target.ServiceID))}
+	query := container.ListOptions{All: true, Filters: identity.filters()}
 	stoppedReads := 0
 	for stoppedReads < 2 {
 		if err = a.verifyLease(bounded, lease); err != nil {
@@ -352,12 +359,13 @@ func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context
 		if e != nil {
 			return e
 		}
+		observations, e := inspectExecutionContainers(bounded, client, rows, identity)
+		if e != nil {
+			return e
+		}
 		active := false
-		for _, row := range rows {
-			if row.Labels[edgeStackLabel] != id || row.Labels[composeServiceLabel] != task.Target.ServiceID {
-				return errors.New("container_identity_changed")
-			}
-			if row.State != "exited" && row.State != "dead" {
+		for _, observation := range observations {
+			if !observation.stopped {
 				active = true
 			}
 		}
@@ -365,15 +373,12 @@ func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context
 			stoppedReads++
 		} else {
 			stoppedReads = 0
-			for _, row := range rows {
-				if row.Labels[edgeStackLabel] != id || row.Labels[composeServiceLabel] != task.Target.ServiceID {
-					return errors.New("container_identity_changed")
-				}
-				if row.State == "exited" || row.State == "dead" {
+			for _, observation := range observations {
+				if observation.stopped {
 					continue
 				}
 				timeout := 10
-				if e = stopper.ContainerStop(bounded, row.ID, container.StopOptions{Timeout: &timeout}); e != nil {
+				if e = stopper.ContainerStop(bounded, observation.id, container.StopOptions{Timeout: &timeout}); e != nil {
 					return e
 				}
 			}

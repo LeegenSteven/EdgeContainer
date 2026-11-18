@@ -93,7 +93,7 @@ The profile binds the approved runtime configuration, workload manifest, inferen
 
 The validation task mounts an independent `EDGESTACK_VALIDATION_TOKEN_FILE`; the worker probe uses its matching credential. The runtime requires the exact `{"workloadDigest":"sha256:..."}` input, bound task/device/hash/profile and an idempotent nonce. An unconfigured validation secret returns 503; the observer credential cannot authorize this endpoint. The echoed image is a request binding; Server independently inspects the registered container's immutable image and desired model environment.
 
-New task deployments receive these observer variables and a dedicated source-scoped secret from Server:
+New task deployments receive these observer variables and a dedicated source-scoped credential file from Server:
 
 ```text
 EDGESTACK_SERVER_URL
@@ -103,6 +103,8 @@ EDGESTACK_MODEL_OBSERVER_TASK_ID
 EDGESTACK_MODEL_OBSERVER_DEVICE_ID
 EDGESTACK_MODEL_OBSERVER_SLOT
 ```
+
+Server uses standard Compose `configs.<name>.content` with a long service config reference to `/run/secrets/edgestack-model-observer`, owned by UID/GID `0:0` with mode `0444`. The pinned Compose implementation copies the credential into the runtime container through Docker's file-copy API; it needs no shared Agent/host file path. Only the file path enters `EDGESTACK_MODEL_OBSERVER_TOKEN_FILE`; the bearer value enters neither environment values nor image layers. The credential is runtime container data. Compose `secrets.*.content` is unsupported by the pinned schema. Templates with a read-only root filesystem are rejected because Compose cannot copy inline config content into them; conflicting config/secret targets are also rejected.
 
 `EDGESTACK_SERVER_CA_FILE` can supply private CA trust. Every 20 seconds the runtime submits a current loaded-model observation to `/api/edgestack/ingest/status`. It submits nothing when actual inference evidence is unavailable. First-time ASR business source, reverse proxy, ports and transport-secret mounts still come from an administrator-approved deployment template.
 

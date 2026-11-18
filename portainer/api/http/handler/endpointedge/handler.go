@@ -22,7 +22,8 @@ type Handler struct {
 	FileService          portainer.FileService
 	ReverseTunnelService portainer.ReverseTunnelService
 	ExecutionPayload     func(context.Context, int, int) (bool, *edge.ExecutionGrant, error)
-	ExecutionCapability  func(context.Context, int, string) error
+	ExecutionCapability  func(context.Context, int, string, string) error
+	ExecutionScope       string
 	ExecutionVerify      http.Handler
 }
 
