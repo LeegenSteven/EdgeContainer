@@ -189,6 +189,10 @@ func (a *deliveryExecutionAuthority) previewExecutionStop(ctx context.Context, g
 }
 
 func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, plan *edgestack.DeliveryExecutionStopPlan) error {
+	return a.confirmExecutionStopGuarded(ctx, plan, nil)
+}
+
+func (a *deliveryExecutionAuthority) confirmExecutionStopGuarded(ctx context.Context, plan *edgestack.DeliveryExecutionStopPlan, authorize func() error) error {
 	if err := a.service.VerifyDeliveryExecutionScope(a.executionScope); err != nil {
 		return err
 	}
@@ -286,6 +290,11 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 	}
 	// Supersede old Edge commands before touching Docker. Their periodic authority
 	// check cancels in-flight commands; no later queued command can restart them.
+	if authorize != nil {
+		if err := authorize(); err != nil {
+			return err
+		}
+	}
 	lease.ActiveOperationID = plan.ID
 	if err = a.service.DeliverySaveExecutionLease(lease); err != nil {
 		return err
@@ -310,7 +319,7 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 		if e != nil || stack.Version != target.Version {
 			return errors.New("test_stack_version_changed")
 		}
-		if err = a.stopExecutionContainers(ctx, task, lease); err != nil {
+		if err = a.stopExecutionContainers(ctx, task, lease, authorize); err != nil {
 			return err
 		}
 	}
@@ -333,7 +342,7 @@ func (a *deliveryExecutionAuthority) confirmExecutionStop(ctx context.Context, p
 	return a.service.DeliverySaveExecutionStopPlan(*plan)
 }
 
-func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context, task edgestack.Task, lease edgestack.DeliveryExecutionLease) error {
+func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context, task edgestack.Task, lease edgestack.DeliveryExecutionLease, authorize func() error) error {
 	identity, err := a.mounts.containerTarget(task)
 	if err != nil {
 		return err
@@ -377,6 +386,11 @@ func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context
 				if observation.stopped {
 					continue
 				}
+				if authorize != nil {
+					if err := authorize(); err != nil {
+						return err
+					}
+				}
 				timeout := 10
 				if e = stopper.ContainerStop(bounded, observation.id, container.StopOptions{Timeout: &timeout}); e != nil {
 					return e
@@ -392,100 +406,4 @@ func (a *deliveryExecutionAuthority) stopExecutionContainers(ctx context.Context
 		}
 	}
 	return nil
-}
-
-func (a *deliveryExecutionAuthority) internalStopValidationTask(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		w.WriteHeader(http.StatusMethodNotAllowed)
-		return
-	}
-	if err := a.service.DeliveryAuthenticateWorker(r); err != nil {
-		http.Error(w, "worker_authentication_required", http.StatusForbidden)
-		return
-	}
-	var body struct {
-		JobID string                  `json:"jobId"`
-		Claim edgestack.DeliveryClaim `json:"claim"`
-	}
-	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 8192)).Decode(&body); err != nil {
-		http.Error(w, "invalid_stop_request", 400)
-		return
-	}
-	job, err := a.service.DeliveryValidateExecutionStopClaim(body.JobID, body.Claim)
-	if err != nil {
-		http.Error(w, "validation_task_stop_policy_required", http.StatusForbidden)
-		return
-	}
-	task, err := a.service.DeliveryExecutionTask(job.ValidationTaskID)
-	if err != nil || !task.TestTask || task.DeviceID != job.ValidationDeviceID {
-		http.Error(w, "isolated_validation_task_required", 409)
-		return
-	}
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	group := a.devices[task.DeviceID]
-	if group == "" {
-		http.Error(w, "device_resource_group_unconfigured", 409)
-		return
-	}
-	lease, known, err := a.service.DeliveryExecutionLease(group)
-	if err != nil {
-		http.Error(w, "execution_registry_unavailable", 503)
-		return
-	}
-	if known && !lease.Released {
-		if lease.ControlEpoch != a.service.DeliveryControlEpoch() || !time.Now().Before(lease.ExpiresAt) {
-			http.Error(w, "execution_epoch_changed", http.StatusConflict)
-			return
-		}
-		devices := []string{}
-		for device, mapped := range a.devices {
-			if mapped == group {
-				devices = append(devices, device)
-			}
-		}
-		tasks, e := a.service.DeliveryExecutionGroupTasks(devices)
-		if e != nil {
-			http.Error(w, "execution_registry_unavailable", 503)
-			return
-		}
-		for _, candidate := range tasks {
-			if candidate.ID != task.ID {
-				http.Error(w, "validation_resource_contains_other_task", 409)
-				return
-			}
-		}
-		if !a.service.DeliveryValidationStopPolicyAllowed(job) {
-			http.Error(w, "validation_task_stop_policy_required", http.StatusForbidden)
-			return
-		}
-		plan, e := a.service.DeliveryExecutionStopPlan("handoff-" + job.ID)
-		if e != nil {
-			plan, e = a.previewExecutionStop(r.Context(), group, job.ResolverUserID)
-			if e == nil {
-				plan.ID = "handoff-" + job.ID
-				e = a.service.DeliverySaveExecutionStopPlan(plan)
-			}
-		}
-		if e != nil {
-			http.Error(w, "validation_resource_busy", 409)
-			return
-		}
-		if plan.ControlEpoch != a.service.DeliveryControlEpoch() {
-			http.Error(w, "execution_epoch_changed", http.StatusConflict)
-			return
-		}
-		for _, target := range plan.Targets {
-			if target.TaskID != job.ValidationTaskID {
-				http.Error(w, "validation_resource_contains_other_task", 409)
-				return
-			}
-		}
-		if e = a.confirmExecutionStop(r.Context(), &plan); e != nil {
-			http.Error(w, "validation_stop_unconfirmed", 409)
-			return
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(map[string]any{"status": "ready"})
 }

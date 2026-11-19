@@ -44,13 +44,16 @@ func (t executionContainerTarget) filters() filters.Args {
 }
 
 func (t executionContainerTarget) matches(labels map[string]string) bool {
-	if labels[composeServiceLabel] != t.service {
+	if labels[composeServiceLabel] != t.service || (t.project != "" && labels[composeProjectLabel] != t.project) {
 		return false
 	}
+	legacyID, legacy := labels[edgeStackLabel]
+	scope, scoped := labels[libstack.EdgeStackScopeLabel]
+	id, scopedID := labels[libstack.EdgeStackScopedIDLabel]
 	if t.scope == "" {
-		return labels[edgeStackLabel] == t.stackID && labels[libstack.EdgeStackScopeLabel] == "" && labels[libstack.EdgeStackScopedIDLabel] == ""
+		return legacyID == t.stackID && !scoped && !scopedID
 	}
-	return labels[libstack.EdgeStackScopedIDLabel] == t.stackID && labels[libstack.EdgeStackScopeLabel] == t.scope && labels[composeProjectLabel] == t.project && labels[edgeStackLabel] == ""
+	return !legacy && scope == t.scope && id == t.stackID
 }
 
 func (p *mountProvider) containerTarget(task edgestack.Task) (executionContainerTarget, error) {

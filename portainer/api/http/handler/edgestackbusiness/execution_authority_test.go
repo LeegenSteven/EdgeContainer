@@ -29,7 +29,6 @@ func executionResponse(body any) *http.Response {
 func executionAuthorityFixture(t *testing.T, scopes ...string) (*deliveryExecutionAuthority, edgestack.Task, string) {
 	t.Helper()
 	d, store, _ := dispatcherFixture(t)
-	_ = d
 	path := filepath.Join(t.TempDir(), "business.db")
 	scope := ""
 	if len(scopes) != 0 {
@@ -44,7 +43,7 @@ func executionAuthorityFixture(t *testing.T, scopes ...string) (*deliveryExecuti
 	require.NoError(t, store.EdgeStack().Create(stack.ID, stack))
 	token := filepath.Join(t.TempDir(), "lease-token")
 	require.NoError(t, os.WriteFile(token, []byte(strings.Repeat("s", 32)), 0600))
-	a := &deliveryExecutionAuthority{executionScope: scope, service: s, store: store, baseURL: "http://lease.invalid", tokenFile: token, devices: map[string]string{"device": "board"}, client: &http.Client{}, capabilities: map[int]executionCapability{}}
+	a := &deliveryExecutionAuthority{dispatcher: d, executionScope: scope, service: s, store: store, baseURL: "http://lease.invalid", tokenFile: token, devices: map[string]string{"device": "board"}, client: &http.Client{}, capabilities: map[int]executionCapability{}}
 	return a, task, path
 }
 

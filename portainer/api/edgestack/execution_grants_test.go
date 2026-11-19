@@ -9,6 +9,42 @@ import (
 	bolt "go.etcd.io/bbolt"
 )
 
+func TestValidationHandoffClaimTracksCurrentTargetAndAuthority(t *testing.T) {
+	for _, change := range []string{"revoked", "archived", "endpoint", "template", "stale_claim"} {
+		t.Run(change, func(t *testing.T) {
+			f, token := deliveryFixture(t)
+			job, claim := deliveryCreateClaim(t, f, token)
+			if _, err := f.s.DeliveryValidateExecutionStopClaim(job.ID, claim); err != nil {
+				t.Fatal(err)
+			}
+			if err := f.s.db.Update(func(tx *bolt.Tx) error {
+				task, err := read[Task](tx, "tasks", job.ValidationTaskID)
+				if err != nil {
+					return err
+				}
+				switch change {
+				case "revoked":
+					f.endpointAllowed = false
+				case "archived":
+					task.Archived = true
+				case "endpoint":
+					task.Target.EndpointID++
+				case "template":
+					task.TemplateID += "-changed"
+				case "stale_claim":
+					claim.ClaimEpoch++
+				}
+				return put(tx, "tasks", task.ID, task)
+			}); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := f.s.DeliveryValidateExecutionStopClaim(job.ID, claim); err == nil {
+				t.Fatal("changed validation target or claim passed")
+			}
+		})
+	}
+}
+
 func TestExecutionGrantRechecksActorAndPublication(t *testing.T) {
 	f, _ := deliveryFixture(t)
 	model := ModelPackage{ID: "managed-model", Name: "Managed", Version: "1", Slot: "llm", TaskKinds: []string{"voice"}, Architectures: []string{"amd64"}, Published: true, Immutable: true, Image: "runtime@sha256:" + strings.Repeat("a", 64), ModelHash: "sha256:" + strings.Repeat("b", 64)}

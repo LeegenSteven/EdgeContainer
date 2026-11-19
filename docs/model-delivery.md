@@ -62,6 +62,8 @@ User endpoints are under `/api/edgestack`:
 
 Resident test-device leases are visible in **设备租约**. Administrators preview stopping isolated test tasks, then explicitly confirm release; interrupted stops reconcile the same durable preview. The `allowStopValidationTask` policy flag separately permits a claimed build job to stop its bound isolated validation task before native validation. Business tasks are excluded from this automatic handoff.
 
+The worker selects the AgentDP board using the frozen validation device. The initial handoff requires the current isolated Compose stack version to report completion at zero replicas. After a confirmed resident stop, its matching stop record can also establish that the current version was stopped. In both cases the server inspects the entire Compose project twice before returning ready. An older unversioned completion requires a fresh deployment report for this initial handoff. Each release health check takes a fresh Docker observation of the image, model parameters and health. A new-task rollback restores the previous Compose file if the matching database update fails. Before confirming success it checks the current stack version and two separate observations of the stopped containers.
+
 Administrator endpoints include `/admin/model-requests`, request `/resolve` and `/retry`, `/admin/delivery/recipes`, `/policies`, `/jobs`, `/artifacts` and `/settings`. Versioned recipe/policy writes use `metadataVersion` and reject stale updates.
 
 Worker endpoints are a narrow, separately authenticated internal API for claim, heartbeat, artifact result and final validation start/status/complete. They cannot proxy arbitrary Server or AgentDP operations. Browser-facing projections omit claim secrets and observer tokens.

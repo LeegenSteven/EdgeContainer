@@ -16,7 +16,7 @@ var _ deployer.Deployer = &DockerComposeStackService{}
 
 // DockerComposeStackService represents a service for managing stacks by using the Docker binary.
 type DockerComposeStackService struct {
-	deployer   libstack.Deployer
+	deployer   *compose.ComposeDeployer
 	ownerScope string
 }
 
@@ -82,7 +82,13 @@ func (service *DockerComposeStackService) Validate(ctx context.Context, name str
 	})
 }
 
-func (service *DockerComposeStackService) WaitForStatus(ctx context.Context, name string, status libstack.Status, _ deployer.CheckStatusOptions) libstack.WaitResult {
+func (service *DockerComposeStackService) WaitForStatus(ctx context.Context, name string, status libstack.Status, options deployer.CheckStatusOptions) libstack.WaitResult {
+	if status == libstack.StatusRunning && options.StackFileLocation != "" {
+		return service.deployer.WaitForDeployment(ctx, options.StackFileLocation, libstack.DeployOptions{
+			Options:     libstack.Options{ProjectName: name, WorkingDir: options.WorkingDir, Env: options.Env},
+			EdgeStackID: options.EdgeStackID,
+		})
+	}
 	return service.deployer.WaitForStatus(ctx, name, status)
 }
 

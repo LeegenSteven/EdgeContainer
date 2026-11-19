@@ -92,6 +92,7 @@ type executionCapability struct {
 }
 
 type deliveryExecutionAuthority struct {
+	dispatcher     *Dispatcher
 	executionScope string
 	mounts         *mountProvider
 	adminAccess    func(http.Handler) http.Handler

@@ -117,7 +117,7 @@ func TestScopedManagedStopNeverStopsLegacyOrOtherScope(t *testing.T) {
 			a.client.Transport = executionRoundTripper(func(*http.Request) (*http.Response, error) {
 				return executionResponse(map[string]any{"valid": true, "lease_id": "lease", "group_id": "board", "expires_at": time.Now().Add(time.Minute)}), nil
 			})
-			require.ErrorContains(t, a.stopExecutionContainers(context.Background(), task, lease), "container_identity_changed")
+			require.ErrorContains(t, a.stopExecutionContainers(context.Background(), task, lease, nil), "container_identity_changed")
 			require.Zero(t, client.stops)
 			require.Contains(t, client.options.Filters.Get("label"), libstack.EdgeStackScopeLabel+"=acceptance")
 		})
@@ -147,7 +147,7 @@ func TestScopedManagedStopConfirmsOnlyInspectedOwnedTarget(t *testing.T) {
 	a.client.Transport = executionRoundTripper(func(*http.Request) (*http.Response, error) {
 		return executionResponse(map[string]any{"valid": true, "lease_id": "lease", "group_id": "board", "expires_at": time.Now().Add(time.Minute)}), nil
 	})
-	require.NoError(t, a.stopExecutionContainers(context.Background(), task, lease))
+	require.NoError(t, a.stopExecutionContainers(context.Background(), task, lease, nil))
 	require.Equal(t, 1, client.stops)
 	require.Equal(t, "owned", client.inspectedID)
 	require.EqualValues(t, 3, client.lists.Load())

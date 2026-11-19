@@ -418,6 +418,14 @@ func (s *Service) DeliveryValidateExecutionStopClaim(jobID string, claim Deliver
 		if e = s.deliveryJobAuthorized(tx, nil, job); e != nil {
 			return e
 		}
+		task, e := read[Task](tx, "tasks", job.ValidationTaskID)
+		if e != nil || task.Archived || !task.TestTask || task.DeviceID != job.ValidationDeviceID || task.Kind != job.Recipe.TaskKind || task.TemplateID != job.Recipe.TemplateID || task.RuntimeBackend != job.Recipe.RuntimeBackend {
+			return fail(409, "validation_target_changed")
+		}
+		device, e := read[Device](tx, "devices", task.DeviceID)
+		if e != nil || device.Archived || device.EndpointID != task.Target.EndpointID || device.Architecture != job.Recipe.Architecture {
+			return fail(409, "validation_target_changed")
+		}
 		return nil
 	})
 	return job.DeliveryJob, err

@@ -167,6 +167,7 @@ func New(ctx context.Context, bouncer security.BouncerService, store dataservice
 		service.Close()
 		return nil, err
 	}
+	execution.dispatcher = dispatcher
 	execution.mounts, _ = mounts.(*mountProvider)
 	execution.adminAccess = bouncer.AdminAccess
 	service.SetDeliveryExecutionAuthority(execution)

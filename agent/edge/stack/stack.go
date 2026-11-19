@@ -265,9 +265,14 @@ func (manager *StackManager) performActionOnStack() {
 	case StatusAwaitingDeployedStatus, StatusAwaitingRemovedStatus, StatusDeployed:
 		checkStatusOptions := deployer.CheckStatusOptions{
 			StackFileLocation: stackFileLocation,
+			EdgeStackID:       portainer.EdgeStackID(stack.ID),
 			DeployerBaseOptions: deployer.DeployerBaseOptions{
-				Namespace: stack.Namespace,
+				Namespace:  stack.Namespace,
+				WorkingDir: stack.FileFolder,
 			},
+		}
+		if !IsHelmStack(stack) && stack.Status == StatusAwaitingDeployedStatus {
+			checkStatusOptions.Env = buildEnvVarsForDeployer(stack.EnvVars)
 		}
 
 		if IsGitRepoHelmStack(stack) {
@@ -396,7 +401,6 @@ func (manager *StackManager) checkStackStatus(ctx context.Context, stackName str
 		Str("stack_name", stackName).
 		Str("status", stack.Status.String()).
 		Str("helm_chart_path", stack.HelmConfig.ChartPath).
-		Strs("env", options.Env).
 		Msg("checking stack status")
 
 	requiredStatus := libstack.StatusRemoved

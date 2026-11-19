@@ -7,7 +7,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"github.com/docker/docker/api/types/container"
 	"net/url"
 	"os"
 	"path"
@@ -16,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/docker/docker/api/types/container"
 	portainer "github.com/portainer/portainer/api"
 	"github.com/portainer/portainer/api/dataservices"
 	"github.com/portainer/portainer/api/edgestack"
@@ -23,6 +23,7 @@ import (
 	"github.com/portainer/portainer/api/internal/edge"
 	edgestackservice "github.com/portainer/portainer/api/internal/edge/edgestacks"
 	"github.com/portainer/portainer/api/stacks/stackutils"
+	"github.com/portainer/portainer/pkg/libstack"
 	"go.yaml.in/yaml/v3"
 )
 
@@ -236,68 +237,53 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 	}
 	name := "edgestack-delivery-" + spec.TaskID
 	task := edgestack.Task{ID: spec.TaskID, DeviceID: spec.Device.ID, Target: edgestack.Target{EndpointID: spec.Device.EndpointID, StackName: name, ServiceID: p.templates[spec.Recipe.TemplateID].ServiceID}}
-	err := p.store.UpdateTx(func(tx dataservices.DataStoreTx) error {
+	d := &Dispatcher{store: p.store, files: p.files}
+	var expected, stoppedVersion string
+	var desired []byte
+	var nextVersion int
+	err := p.store.ViewTx(func(tx dataservices.DataStoreTx) error {
 		rows, err := tx.EdgeStack().EdgeStacks()
 		if err != nil {
 			return err
 		}
-		for _, stack := range rows {
-			if stack.Name != name {
+		for _, row := range rows {
+			if row.Name != name {
 				continue
 			}
-			task.Target.StackID = int(stack.ID)
-			raw, err := p.files.GetFileContent(stack.ProjectPath, stack.EntryPoint)
+			task.Target.StackID = int(row.ID)
+			stack, raw, err := d.target(tx, task)
 			if err != nil {
 				return err
 			}
-			root, err := serviceNode(raw, task.Target.ServiceID)
+			expected = version(stack, raw)
+			desired, err = stoppedDeliveryCompose(raw, task.Target.ServiceID, spec.Package.Image)
 			if err != nil {
 				return err
 			}
-			service := mappingValue(mappingValue(root.Content[0], "services"), task.Target.ServiceID)
-			image := mappingValue(service, "image")
-			if image == nil || image.Value != spec.Package.Image {
-				return errors.New("delivery_rollback_target_changed")
+			nextVersion = stack.Version
+			stoppedVersion = expected
+			if desired != nil {
+				if err := stackutils.ValidateEdgeStackComposeContent(ctx, stack.DeploymentType, desired); err != nil {
+					return err
+				}
+				nextVersion++
+				next := *stack
+				next.Version = nextVersion
+				stoppedVersion = version(&next, desired)
 			}
-			deploy := mappingValue(service, "deploy")
-			if deploy == nil {
-				deploy = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
-				service.Content = append(service.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "deploy", Tag: "!!str"}, deploy)
-			}
-			replicas := mappingValue(deploy, "replicas")
-			version := stack.Version
-			alreadyStopped := replicas != nil && replicas.Value == "0"
-			if !alreadyStopped {
-				version++
-			}
-			if err := p.prepare(ctx, spec, operationID, int(stack.ID), version); err != nil {
-				return err
-			}
-			if alreadyStopped {
-				return nil
-			}
-			if replicas == nil {
-				deploy.Content = append(deploy.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "replicas", Tag: "!!str"}, &yaml.Node{Kind: yaml.ScalarNode, Value: "0", Tag: "!!int"})
-			} else {
-				replicas.Value = "0"
-				replicas.Tag = "!!int"
-			}
-			content, err := yaml.Marshal(root)
-			if err != nil {
-				return err
-			}
-			if _, err := p.files.StoreEdgeStackFileFromBytes(strconv.Itoa(int(stack.ID)), stack.EntryPoint, content); err != nil {
-				return err
-			}
-			stack.Version = version
-			if err := tx.EdgeStackStatus().Clear(stack.ID, []portainer.EndpointID{portainer.EndpointID(spec.Device.EndpointID)}); err != nil {
-				return err
-			}
-			return tx.EdgeStack().UpdateEdgeStack(stack.ID, &stack)
+			return nil
 		}
 		return errors.New("delivery_rollback_task_missing")
 	})
 	if err != nil {
+		return err
+	}
+	// The shared authority may perform network I/O. Recheck the preview token
+	// in the write transaction after the grant has been acquired.
+	if err := p.prepare(ctx, spec, operationID, task.Target.StackID, nextVersion); err != nil {
+		return err
+	}
+	if err := d.updateCompose(ctx, task, expected, func([]byte) ([]byte, error) { return desired, nil }); err != nil {
 		return err
 	}
 	// A desired replica count is not evidence that the Edge executor has stopped.
@@ -311,27 +297,39 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 	if err != nil {
 		return err
 	}
+	identity.project = libstack.EdgeStackProjectName(p.mounts.executionScope, name)
 	for {
 		client, err := p.mounts.newClient(ctx, task)
+		stopped := false
 		if err == nil && client != nil {
-			rows, e := client.ContainerList(ctx, container.ListOptions{All: true, Filters: identity.filters()})
-			stopped := false
-			if e == nil {
-				stopped, e = inspectExecutionContainersStopped(ctx, client, rows, identity)
-			}
+			stopped, err = inspectStoppedProject(ctx, client, identity)
 			client.Close()
-			if e == nil && stopped {
-				stoppedReads++
-				status, statusErr := p.store.EdgeStackStatus().Read(portainer.EdgeStackID(task.Target.StackID), portainer.EndpointID(task.Target.EndpointID))
-				if stoppedReads >= 2 && statusErr == nil {
-					for _, state := range status.Status {
-						if state.Type == portainer.EdgeStackStatusAcknowledged {
-							return nil
-						}
+		}
+		if err == nil && stopped {
+			stoppedReads++
+			if stoppedReads >= 2 {
+				complete := false
+				err := p.store.ViewTx(func(tx dataservices.DataStoreTx) error {
+					stack, raw, err := d.target(tx, task)
+					if err != nil {
+						return err
 					}
+					if stack.Name != name || version(stack, raw) != stoppedVersion {
+						return errors.New("delivery_rollback_target_changed")
+					}
+					status, err := tx.EdgeStackStatus().Read(stack.ID, portainer.EndpointID(task.Target.EndpointID))
+					if err != nil && !dataservices.IsErrObjectNotFound(err) {
+						return err
+					}
+					complete = currentDeploymentCompleted(status, nextVersion)
+					return nil
+				})
+				if err != nil {
+					return err
 				}
-			} else {
-				stoppedReads = 0
+				if complete && ctx.Err() == nil {
+					return nil
+				}
 			}
 		} else {
 			stoppedReads = 0
@@ -342,6 +340,43 @@ func (p *deliveryProvisioner) Rollback(ctx context.Context, spec edgestack.Deliv
 		case <-tick.C:
 		}
 	}
+}
+
+// Preserve the template and any persistent volumes. When both Compose forms
+// exist, changing only one would leave scale and deploy.replicas inconsistent.
+func stoppedDeliveryCompose(raw []byte, serviceID, expectedImage string) ([]byte, error) {
+	root, err := serviceNode(raw, serviceID)
+	if err != nil {
+		return nil, err
+	}
+	svc := mappingValue(mappingValue(root.Content[0], "services"), serviceID)
+	image := mappingValue(svc, "image")
+	if image == nil || image.Value != expectedImage {
+		return nil, errors.New("delivery_rollback_target_changed")
+	}
+	deploy := mappingValue(svc, "deploy")
+	if deploy != nil && deploy.Kind != yaml.MappingNode {
+		return nil, errors.New("delivery_rollback_deploy_invalid")
+	}
+	replicas := mappingValue(deploy, "replicas")
+	scale := mappingValue(svc, "scale")
+	if (replicas != nil || scale != nil) && (replicas == nil || replicas.Value == "0") && (scale == nil || scale.Value == "0") {
+		return nil, nil
+	}
+	if deploy == nil {
+		deploy = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
+		svc.Content = append(svc.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "deploy", Tag: "!!str"}, deploy)
+	}
+	if replicas == nil {
+		replicas = &yaml.Node{}
+		deploy.Content = append(deploy.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "replicas", Tag: "!!str"}, replicas)
+	}
+	for _, node := range []*yaml.Node{replicas, scale} {
+		if node != nil {
+			*node = yaml.Node{Kind: yaml.ScalarNode, Tag: "!!int", Value: "0"}
+		}
+	}
+	return yaml.Marshal(root)
 }
 
 // Paused/restarting/created containers still occupy the target. An empty or

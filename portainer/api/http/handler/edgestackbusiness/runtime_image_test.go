@@ -54,13 +54,19 @@ func TestDeliveryHealthRequiresActualDockerHealth(t *testing.T) {
 		t.Fatal("running container without health evidence passed")
 	}
 	client.actual.State.Health = &container.Health{Status: "healthy"}
-	task.Revision++
 	if err := observe(context.Background(), task, model); err != nil {
 		t.Fatal(err)
 	}
 	client.actual.State.Health.Status = "unhealthy"
-	task.Revision++
 	if err := observe(context.Background(), task, model); err == nil {
 		t.Fatal("unhealthy inference runtime passed")
+	}
+	client.actual.State.Health.Status = "healthy"
+	client.actual.State.Paused = true
+	if err := observe(context.Background(), task, model); err == nil {
+		t.Fatal("paused container passed on a previously healthy sample")
+	}
+	if client.inspects.Load() != 4 {
+		t.Fatalf("four observations need four independent inspections, got %d", client.inspects.Load())
 	}
 }

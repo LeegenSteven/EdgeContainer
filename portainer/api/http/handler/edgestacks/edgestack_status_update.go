@@ -122,16 +122,17 @@ func (handler *Handler) edgeStackStatusUpdate(w http.ResponseWriter, r *http.Req
 }
 
 func (handler *Handler) updateEdgeStackStatus(tx dataservices.DataStoreTx, stack *portainer.EdgeStack, stackID portainer.EdgeStackID, payload updateStatusPayload) error {
-	if payload.Version > 0 && payload.Version < stack.Version {
+	if payload.Version > 0 && payload.Version != stack.Version {
 		return nil
 	}
 
 	status := *payload.Status
 
 	deploymentStatus := portainer.EdgeStackDeploymentStatus{
-		Type:  status,
-		Error: payload.Error,
-		Time:  payload.Time,
+		Type:    status,
+		Version: payload.Version,
+		Error:   payload.Error,
+		Time:    payload.Time,
 	}
 
 	if deploymentStatus.Type == portainer.EdgeStackStatusRemoved {
@@ -148,10 +149,16 @@ func (handler *Handler) updateEdgeStackStatus(tx dataservices.DataStoreTx, stack
 		}
 	}
 
-	if containsStatus := slices.ContainsFunc(environmentStatus.Status, func(e portainer.EdgeStackDeploymentStatus) bool {
+	index := slices.IndexFunc(environmentStatus.Status, func(e portainer.EdgeStackDeploymentStatus) bool {
 		return e.Type == deploymentStatus.Type
-	}); !containsStatus {
+	})
+	if index < 0 {
 		environmentStatus.Status = append(environmentStatus.Status, deploymentStatus)
+	} else {
+		previous := environmentStatus.Status[index]
+		if payload.Version > previous.Version || (payload.Version > 0 && payload.Version == previous.Version && payload.Time > previous.Time) {
+			environmentStatus.Status = append(slices.Delete(environmentStatus.Status, index, index+1), deploymentStatus)
+		}
 	}
 
 	return tx.EdgeStackStatus().Update(stackID, payload.EndpointID, environmentStatus)

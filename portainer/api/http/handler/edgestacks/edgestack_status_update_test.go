@@ -78,6 +78,41 @@ func TestUpdateStatusAndInspect(t *testing.T) {
 	}
 }
 
+func TestCompletedStatusIsBoundToReportedStackVersion(t *testing.T) {
+	handler, _ := setupHandler(t)
+	endpoint := createEndpoint(t, handler.DataStore)
+	stack := createEdgeStack(t, handler.DataStore, endpoint.ID)
+	stack.Version = 3
+	require.NoError(t, handler.DataStore.EdgeStack().UpdateEdgeStack(stack.ID, &stack))
+	complete := portainer.EdgeStackStatusCompleted
+	submit := func(version int) {
+		data, err := json.Marshal(updateStatusPayload{Status: &complete, EndpointID: endpoint.ID, Version: version})
+		require.NoError(t, err)
+		req := httptest.NewRequest(http.MethodPut, fmt.Sprintf("/edge_stacks/%d/status", stack.ID), bytes.NewReader(data))
+		req.Header.Set(portainer.PortainerAgentEdgeIDHeader, endpoint.EdgeID)
+		w := httptest.NewRecorder()
+		handler.ServeHTTP(w, req)
+		require.Equal(t, http.StatusOK, w.Code)
+	}
+	for _, version := range []int{0, 2, 4, 3, 0, 3} {
+		submit(version)
+		status, err := handler.DataStore.EdgeStackStatus().Read(stack.ID, endpoint.ID)
+		require.NoError(t, err)
+		var completed []int
+		for _, transition := range status.Status {
+			if transition.Type == complete {
+				completed = append(completed, transition.Version)
+			}
+		}
+		if version == 2 || version == 4 {
+			require.Equal(t, []int{0}, completed)
+		}
+		if version == 3 {
+			require.Equal(t, []int{3}, completed)
+		}
+	}
+}
+
 func TestUpdateStatusForUnassignedEdgeStack(t *testing.T) {
 	t.Parallel()
 	handler, _ := setupHandler(t)

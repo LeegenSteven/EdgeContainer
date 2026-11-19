@@ -196,6 +196,42 @@ class DeliveryTests(unittest.TestCase):
         self.assertEqual(reloaded['nativeJobId'], 'native-a')
         journal.close()
 
+    def test_resumed_native_job_requires_its_original_validation_board_and_plan(self):
+        journal = Journal(self.root / 'journal.db')
+        self.addCleanup(journal.close)
+        job = fixture_job()
+        state = journal.bind(job)
+        state.update(sessionId='s', planId='p', nativeJobId='j')
+        client = mock.Mock()
+        native = AgentDP(client, Guard(), journal, job, state, {}, 'validation-board')
+        for device, original in [('request-board', 'j'), ('validation-board', 'other')]:
+            client.request.return_value = {'session_id': 's', 'device': device, 'job_id': original}
+            with self.assertRaises(DeliveryError) as error:
+                native.verify_native()
+            self.assertEqual(error.exception.code, 'agent_plan_identity_mismatch')
+            client.request.assert_called_once_with('/v1/device-plans/p')
+            client.reset_mock()
+
+    def test_request_and_validation_devices_can_differ(self):
+        journal = Journal(self.root / 'journal.db')
+        self.addCleanup(journal.close)
+        job = fixture_job()
+        job['validationDeviceId'] = 'validation-board'
+        recipe = {'id': job['recipeId'], 'enabled': True, 'serverRecipeDigest': job['recipeDigest']}
+        worker = Worker({'workerId': 'worker', 'workDir': str(self.root), 'recipes': [recipe],
+                         'devices': {'validation-board': {'agentdpDevice': 'correct-alias', 'validationTaskId': 'test-a'}}},
+                        server=mock.Mock(), agent=mock.Mock(), journal=journal)
+        with mock.patch('delivery_worker.fetch_source'), mock.patch.object(worker, 'prepare_native'), mock.patch('delivery_worker.AgentDP') as native:
+            native.return_value.verify_native.side_effect = RuntimeError('reached intended device')
+            with self.assertRaisesRegex(RuntimeError, 'reached intended device'):
+                worker.execute(job, {}, {}, Guard())
+            self.assertEqual(native.call_args.args[-1], 'correct-alias')
+            job['validationDeviceId'] = 'unconfigured'
+            with self.assertRaises(DeliveryError) as error:
+                worker.execute(job, {}, {}, Guard())
+            self.assertEqual(error.exception.code, 'device_mapping_unavailable')
+            native.assert_called_once()
+
     def test_ambiguous_plan_is_not_created_again(self):
         journal = Journal(self.root / 'journal.db')
         job = fixture_job()

@@ -88,32 +88,37 @@ func modelRuntimeVerifier(provider edgestack.MountProvider) func(context.Context
 		if !ok {
 			return errors.New("runtime_image_unconfirmed")
 		}
-		ctx, cancel := context.WithTimeout(ctx, mountQueryTimeout)
-		defer cancel()
-		snapshot := p.snapshot(ctx, task)
-		if snapshot.reason != "" || snapshot.observedAt.IsZero() {
-			return errors.New("runtime_image_unconfirmed")
-		}
-		expected, err := reference.ParseNormalizedNamed(model.Image)
-		if err != nil {
-			return errors.New("runtime_image_unconfirmed")
-		}
-		actual, err := reference.ParseNormalizedNamed(snapshot.image)
-		if err != nil {
-			return errors.New("runtime_image_unconfirmed")
-		}
-		wanted, wantedOK := expected.(reference.Canonical)
-		running, runningOK := actual.(reference.Canonical)
-		if !wantedOK || !runningOK || wanted.Name() != running.Name() || wanted.Digest() != running.Digest() {
-			return errors.New("runtime_image_unconfirmed")
-		}
-		for key, value := range model.Environment {
-			if got, ok := snapshot.modelEnvironment[key]; !ok || got != value {
-				return errors.New("runtime_model_parameters_unconfirmed")
-			}
-		}
-		return nil
+		_, err := p.verifiedRuntime(ctx, task, model)
+		return err
 	}
+}
+
+func (p *mountProvider) verifiedRuntime(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage) (mountSnapshot, error) {
+	ctx, cancel := context.WithTimeout(ctx, mountQueryTimeout)
+	defer cancel()
+	snapshot := p.readSnapshot(ctx, task, true)
+	if snapshot.reason != "" || snapshot.observedAt.IsZero() {
+		return mountSnapshot{}, errors.New("runtime_image_unconfirmed")
+	}
+	expected, err := reference.ParseNormalizedNamed(model.Image)
+	if err != nil {
+		return mountSnapshot{}, errors.New("runtime_image_unconfirmed")
+	}
+	actual, err := reference.ParseNormalizedNamed(snapshot.image)
+	if err != nil {
+		return mountSnapshot{}, errors.New("runtime_image_unconfirmed")
+	}
+	wanted, wantedOK := expected.(reference.Canonical)
+	running, runningOK := actual.(reference.Canonical)
+	if !wantedOK || !runningOK || wanted.Name() != running.Name() || wanted.Digest() != running.Digest() {
+		return mountSnapshot{}, errors.New("runtime_image_unconfirmed")
+	}
+	for key, value := range model.Environment {
+		if got, ok := snapshot.modelEnvironment[key]; !ok || got != value {
+			return mountSnapshot{}, errors.New("runtime_model_parameters_unconfirmed")
+		}
+	}
+	return snapshot, nil
 }
 
 type mountCacheKey struct {
@@ -217,6 +222,10 @@ func (p *mountProvider) ObserveRuntime(ctx context.Context, task edgestack.Task)
 }
 
 func (p *mountProvider) snapshot(ctx context.Context, task edgestack.Task) mountSnapshot {
+	return p.readSnapshot(ctx, task, false)
+}
+
+func (p *mountProvider) readSnapshot(ctx context.Context, task edgestack.Task, fresh bool) mountSnapshot {
 	if task.Target.EndpointID <= 0 || task.Target.StackID <= 0 || task.Target.ServiceID == "" {
 		return mountSnapshot{reason: "mount_target_unavailable"}
 	}
@@ -233,7 +242,7 @@ func (p *mountProvider) snapshot(ctx context.Context, task edgestack.Task) mount
 	if exists {
 		select {
 		case <-entry.done:
-			if !p.now().Before(entry.expires) {
+			if fresh || !p.now().Before(entry.expires) {
 				exists = false
 			}
 		default:
@@ -317,7 +326,7 @@ func (p *mountProvider) inspect(ctx context.Context, task edgestack.Task) mountS
 	if actual.ContainerJSONBase == nil || actual.ID != running[0].ID || actual.Config == nil || !identity.matches(actual.Config.Labels) {
 		return mountSnapshot{reason: "container_identity_mismatch"}
 	}
-	if actual.State == nil || !actual.State.Running {
+	if actual.State == nil || !actual.State.Running || actual.State.Paused || actual.State.Restarting || actual.State.Dead {
 		return mountSnapshot{reason: "container_not_running"}
 	}
 	if ctx.Err() != nil {
@@ -356,12 +365,11 @@ func deliveryHealthObserver(provider edgestack.MountProvider) func(context.Conte
 	if !ok {
 		return nil
 	}
-	verify := modelRuntimeVerifier(provider)
 	return func(ctx context.Context, task edgestack.Task, model edgestack.ModelPackage) error {
-		if err := verify(ctx, task, model); err != nil {
+		snapshot, err := p.verifiedRuntime(ctx, task, model)
+		if err != nil {
 			return err
 		}
-		snapshot := p.snapshot(ctx, task)
 		if !snapshot.healthy {
 			return errors.New("runtime_health_unconfirmed")
 		}

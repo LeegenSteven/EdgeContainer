@@ -134,6 +134,14 @@ func (d *Dispatcher) Apply(ctx context.Context, task edgestack.Task, model edges
 			return lookupErr
 		}
 	}
+	return d.updateCompose(ctx, task, expected, func(content []byte) ([]byte, error) {
+		return patchComposeContext(ctx, content, task, model)
+	})
+}
+
+// updateCompose updates one checked version and restores its file if committing
+// the matching status/version fails. A nil replacement is an idempotent no-op.
+func (d *Dispatcher) updateCompose(ctx context.Context, task edgestack.Task, expected string, patch func([]byte) ([]byte, error)) error {
 	var before, updated []byte
 	var original *portainer.EdgeStack
 	fileTouched, restored := false, false
@@ -142,11 +150,11 @@ func (d *Dispatcher) Apply(ctx context.Context, task edgestack.Task, model edges
 		if err != nil {
 			return err
 		}
-		if expected != version(stack, content) {
+		if expected != version(stack, content) || (task.Target.StackName != "" && stack.Name != task.Target.StackName) {
 			return errors.New("target changed after preview")
 		}
-		updated, err = patchComposeContext(ctx, content, task, model)
-		if err != nil {
+		updated, err = patch(content)
+		if err != nil || updated == nil {
 			return err
 		}
 		if err := stackutils.ValidateEdgeStackComposeContent(ctx, stack.DeploymentType, updated); err != nil {
@@ -320,9 +328,7 @@ func patchComposeContext(ctx context.Context, content []byte, task edgestack.Tas
 	return out.Bytes(), nil
 }
 
-// Restart only an explicitly validated isolated test service. A normal model
-// replacement, including one on a TestTask, retains its stopped replica state.
-func activateValidationService(service *yaml.Node) error {
+func validationServiceScale(service *yaml.Node) (int, error) {
 	hasMerge := func(node *yaml.Node) bool {
 		if node == nil {
 			return false
@@ -335,11 +341,11 @@ func activateValidationService(service *yaml.Node) error {
 		return false
 	}
 	if service.Anchor != "" || hasMerge(service) {
-		return errors.New("validation does not support service merge or anchor inheritance")
+		return 0, errors.New("validation does not support service merge or anchor inheritance")
 	}
 	deploy := mappingValue(service, "deploy")
 	if deploy != nil && (deploy.Kind != yaml.MappingNode || deploy.Anchor != "" || hasMerge(deploy)) {
-		return errors.New("validation requires an explicit deploy mapping")
+		return 0, errors.New("validation requires an explicit deploy mapping")
 	}
 	replicas := mappingValue(deploy, "replicas")
 	scale := mappingValue(service, "scale")
@@ -358,18 +364,31 @@ func activateValidationService(service *yaml.Node) error {
 	}
 	r, err := count(replicas)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	s, err := count(scale)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if replicas != nil && scale != nil && r != s {
-		return errors.New("validation scale and deploy replicas must agree")
+		return 0, errors.New("validation scale and deploy replicas must agree")
 	}
-	if (replicas == nil || r == 1) && (scale == nil || s == 1) {
-		return nil
+	if scale != nil {
+		return s, nil
 	}
+	return r, nil
+}
+
+// Restart only an explicitly validated isolated test service. A normal model
+// replacement, including one on a TestTask, retains its stopped replica state.
+func activateValidationService(service *yaml.Node) error {
+	count, err := validationServiceScale(service)
+	if err != nil || count == 1 {
+		return err
+	}
+	deploy := mappingValue(service, "deploy")
+	replicas := mappingValue(deploy, "replicas")
+	scale := mappingValue(service, "scale")
 	if deploy == nil {
 		deploy = &yaml.Node{Kind: yaml.MappingNode, Tag: "!!map"}
 		service.Content = append(service.Content, &yaml.Node{Kind: yaml.ScalarNode, Tag: "!!str", Value: "deploy"}, deploy)

@@ -60,5 +60,6 @@ type (
 	CheckStatusOptions struct {
 		DeployerBaseOptions
 		StackFileLocation string
+		EdgeStackID       portainer.EdgeStackID
 	}
 )

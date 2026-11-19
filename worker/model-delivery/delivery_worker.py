@@ -145,11 +145,14 @@ class AgentDP:
             self.state['planId'] = plan['id']
             self.save()
         plan_id = self.state['planId']
-        if not self.state.get('nativeJobId'):
-            self.guard.check()
-            plan = self.client.request('/v1/device-plans/' + plan_id)
-            if plan.get('session_id') != session_id or plan.get('device') != self.device:
-                raise DeliveryError('agent_plan_identity_mismatch', 'AgentDP plan no longer matches the delivery request')
+        self.guard.check()
+        plan = self.client.request('/v1/device-plans/' + plan_id)
+        if plan.get('session_id') != session_id or plan.get('device') != self.device:
+            raise DeliveryError('agent_plan_identity_mismatch', 'AgentDP plan no longer matches the validation device')
+        existing_job = self.state.get('nativeJobId')
+        if existing_job and plan.get('job_id') != existing_job:
+            raise DeliveryError('agent_plan_identity_mismatch', 'AgentDP plan no longer identifies the journaled job')
+        if not existing_job:
             if plan.get('job_id'):
                 self.state['nativeJobId'] = plan['job_id']
             else:
@@ -290,8 +293,8 @@ class Worker:
         recipe_digest = job.get('recipeDigest') or digest({k: v for k, v in job['recipe'].items() if k != 'digest'})
         if local is None or recipe_digest != local['serverRecipeDigest']:
             raise DeliveryError('recipe_not_approved', 'Worker recipe approval does not match the frozen server recipe')
-        device = self.config['devices'].get(job['deviceId'])
-        if not device or device.get('validationTaskId') != job['validationTaskId']:
+        device = self.config['devices'].get(job.get('validationDeviceId', job['deviceId']))
+        if not device or device.get('validationTaskId') != job['validationTaskId'] or not device.get('agentdpDevice'):
             raise DeliveryError('device_mapping_unavailable', 'An approved device and validation task mapping is required')
         workspace = Path(self.config['workDir']) / job['id']
         workspace.mkdir(parents=True, exist_ok=True)
