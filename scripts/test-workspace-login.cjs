@@ -34,11 +34,15 @@ async function run() {
     assert.equal(await password.inputValue(), '');
 
     for (const [width, height] of [[390, 844], [320, 568]]) {
-      await page.setViewportSize({ width, height });
-      const button = form.getByRole('button', { name: '进入我的空间' });
+      const mobile = await browser.newPage({ viewport: { width, height }, isMobile: true, hasTouch: true });
+      await mobile.goto(entry.href);
+      const button = mobile.getByRole('button', { name: '进入我的空间' });
+      await button.waitFor();
+      assert.equal(await mobile.evaluate(() => window.innerWidth), width, 'the layout uses the device width');
       const bounds = await button.boundingBox();
       assert.ok(bounds && bounds.y >= 0 && bounds.y + bounds.height <= height, 'submit stays in the mobile viewport');
-      assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+      assert.ok(await mobile.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth));
+      await mobile.close();
     }
     console.log('Workspace and administrator entries, password controls, and mobile layout passed.');
   } finally {
