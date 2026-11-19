@@ -1,145 +1,101 @@
-<div class="page-wrapper">
-  <!-- login box -->
-  <div class="simple-box container">
-    <div class="col-sm-4 col-sm-offset-4">
-      <!-- login box logo -->
-      <div class="row">
-        <div ng-if="!ctrl.logo">
-          <img src="~@/assets/images/logo_alt.svg" class="simple-box-logo hidden th-highcontrast:!block th-dark:!block" alt="Portainer" />
-          <img src="~@/assets/images/logo_alt_black.svg" class="simple-box-logo block th-highcontrast:hidden th-dark:hidden" alt="Portainer" />
+<main ng-class="ctrl.adminPortal ? 'page-wrapper' : 'ew-login'">
+  <div ng-if="!ctrl.adminPortal" class="ew-login-scene" aria-hidden="true"></div>
+  <div ng-if="!ctrl.adminPortal" class="ew-login-brand">
+    <img ng-if="ctrl.logo" ng-src="{{ ctrl.logo }}" class="ew-login-custom-logo" alt="工作空间" />
+    <span ng-if="!ctrl.logo" class="ew-login-wordmark">
+      <svg aria-hidden="true" focusable="false" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.65" stroke-linecap="round" stroke-linejoin="round">
+        <path d="m12 4-8 4 8 4 8-4-8-4ZM4 12l8 4 8-4M4 16l8 4 8-4" />
+      </svg>
+      <span>EdgeStack<span class="ew-login-dot">.</span></span>
+    </span>
+  </div>
+
+  <div ng-class="ctrl.adminPortal ? 'simple-box container' : 'ew-login-column'">
+    <div ng-class="ctrl.adminPortal ? 'col-sm-4 col-sm-offset-4' : 'ew-login-content'">
+      <div ng-if="ctrl.adminPortal">
+        <div class="row">
+          <div ng-if="!ctrl.logo">
+            <img src="~@/assets/images/logo_alt.svg" class="simple-box-logo hidden th-highcontrast:!block th-dark:!block" alt="Portainer" />
+            <img src="~@/assets/images/logo_alt_black.svg" class="simple-box-logo block th-highcontrast:hidden th-dark:hidden" alt="Portainer" />
+          </div>
+          <img ng-if="ctrl.logo" ng-src="{{ ctrl.logo }}" class="simple-box-logo" alt="管理后台" />
         </div>
-        <img ng-if="ctrl.logo" ng-src="{{ ctrl.logo }}" class="simple-box-logo" />
+        <div class="row p-5 text-center">
+          <p class="text-xl">管理员登录</p>
+          <p class="text-md text-muted fw-bold">Welcome back! Please enter your details</p>
+        </div>
       </div>
-      <!-- !login box logo -->
+      <header ng-if="!ctrl.adminPortal" class="ew-login-heading">
+        <h1>登录我的空间<span class="ew-login-dot" aria-hidden="true">.</span></h1>
+        <p>使用 EdgeStack 账号查看你的设备、任务和互动记录。</p>
+      </header>
 
-      <div class="row p-5 text-center">
-        <p class="text-xl">Log in to your account</p>
-        <p class="text-md text-muted fw-bold">Welcome back! Please enter your details</p>
-      </div>
-
-      <!-- login panel -->
-      <div class="panel panel-default" ng-if="!ctrl.state.loginInProgress">
-        <div class="panel-body">
-          <!-- login form -->
-          <form class="simple-box-form form-horizontal">
-            <div class="form-group">
-              <div class="col-sm-12" style="display: flex; justify-content: center" ng-if="ctrl.state.showOAuthLogin">
-                <a ng-href="{{ ctrl.OAuthLoginURI }}">
-                  <div class="btn btn-primary btn-lg btn-block" ng-if="ctrl.state.OAuthProvider === 'Microsoft'">
-                    <pr-icon icon="'svg-microsoft'"></pr-icon>
-                    Login with Microsoft
-                  </div>
-                  <div class="btn btn-primary btn-lg btn-block" ng-if="ctrl.state.OAuthProvider === 'Google'">
-                    <pr-icon icon="'svg-google'"></pr-icon>
-                    Login with Google
-                  </div>
-                  <div class="btn btn-primary btn-lg btn-block" ng-if="ctrl.state.OAuthProvider === 'Github'">
-                    <pr-icon icon="'svg-github'"></pr-icon>
-                    Login with GitHub
-                  </div>
-                  <div class="btn btn-primary btn-lg btn-block" ng-if="ctrl.state.OAuthProvider === 'OAuth'">
-                    <pr-icon icon="'log-in'"></pr-icon>
-                    Login with OAuth
-                  </div>
-                </a>
-              </div>
+      <div ng-class="ctrl.adminPortal ? 'panel panel-default' : 'ew-login-body'">
+        <div ng-class="{'panel-body': ctrl.adminPortal}">
+          <form
+            ng-if="(ctrl.state.showOAuthLogin || ctrl.state.showStandardLogin) && (!ctrl.state.loginInProgress || (!ctrl.adminPortal && ctrl.state.submitting))"
+            ng-class="ctrl.adminPortal ? 'simple-box-form form-horizontal' : 'ew-login-form'"
+            ng-submit="ctrl.authenticateUser()"
+            ng-attr-aria-busy="{{ ctrl.state.loginInProgress }}"
+          >
+            <div ng-if="ctrl.state.showOAuthLogin" class="ew-login-sso">
+              <a ng-href="{{ ctrl.OAuthLoginURI }}" ng-class="ctrl.adminPortal ? 'btn btn-primary btn-lg btn-block' : 'ew-login-action'">
+                <span ng-switch="ctrl.state.OAuthProvider">
+                  <span ng-switch-when="Microsoft">Login with Microsoft</span>
+                  <span ng-switch-when="Google">Login with Google</span>
+                  <span ng-switch-when="Github">Login with GitHub</span>
+                  <span ng-switch-default>Login with OAuth</span>
+                </span>
+              </a>
+              <button ng-if="!ctrl.state.showStandardLogin" type="button" ng-class="ctrl.adminPortal ? 'btn btn-default' : 'ew-login-switch-method'" ng-click="ctrl.toggleStandardLogin()">使用账号密码登录</button>
+              <div ng-if="ctrl.state.showStandardLogin" class="ew-login-or">或</div>
             </div>
 
-            <!-- divider -->
-            <div class="form-group" ng-if="ctrl.state.showOAuthLogin">
-              <div class="col-sm-12" style="display: flex; align-items: center; justify-content: center">
-                <div class="striketext small text-muted" style="display: flex; align-items: center; justify-content: center; width: 90%">or</div>
-              </div>
+            <div ng-if="ctrl.state.showStandardLogin" class="ew-login-field">
+              <label for="username" ng-class="{'pb-2': ctrl.adminPortal}">{{ ctrl.adminPortal ? 'Username' : '用户名' }}</label>
+              <input id="username" type="text" name="username" class="form-control" data-cy="auth-usernameInput"
+                ng-model="ctrl.formValues.Username" ng-attr-placeholder="{{ ctrl.adminPortal ? 'Enter your username' : undefined }}"
+                autocomplete="username" autocapitalize="none" spellcheck="false" ng-attr-autofocus="{{ ctrl.adminPortal ? 'autofocus' : undefined }}" required />
             </div>
-
-            <!-- use internal auth button -->
-            <div class="form-group" ng-if="ctrl.state.showOAuthLogin && !ctrl.state.showStandardLogin">
-              <div class="col-sm-12" style="display: flex; justify-content: center">
-                <div class="btn btn-primary btn-md btn-block" style="margin-left: 2px" ng-click="ctrl.toggleStandardLogin()"> Use internal authentication </div>
-              </div>
-            </div>
-
-            <!-- !username input -->
-            <div ng-if="ctrl.state.showStandardLogin">
-              <div class="pb-2">Username</div>
-              <input
-                id="username"
-                type="text"
-                data-cy="auth-usernameInput"
-                class="form-control"
-                name="username"
-                ng-model="ctrl.formValues.Username"
-                auto-focus
-                placeholder="Enter your username"
-              />
-            </div>
-
-            <!-- password input -->
-            <div ng-if="ctrl.state.showStandardLogin">
-              <div class="pb-2">Password</div>
+            <div ng-if="ctrl.state.showStandardLogin" class="ew-login-field">
+              <label for="password" ng-class="{'pb-2': ctrl.adminPortal}">{{ ctrl.adminPortal ? 'Password' : '密码' }}</label>
               <div class="relative">
-                <input
-                  id="password"
-                  ng-attr-type="{{ ctrl.state.passwordInputType }}"
-                  class="form-control pr-10"
-                  name="password"
-                  ng-model="ctrl.formValues.Password"
-                  autocomplete="off"
-                  data-cy="auth-passwordInput"
-                  placeholder="Enter your password"
-                  ng-trim="false"
-                />
-                <button
-                  data-cy="auth-passwordInputToggle"
-                  type="button"
-                  ng-click="ctrl.toggleShowPassword()"
-                  class="absolute right-0 top-0 flex h-[34px] w-[50px] items-center justify-center border-none bg-transparent"
-                  tooltip-append-to-body="true"
-                  tooltip-placement="top"
-                  tooltip-class="portainer-tooltip"
-                  uib-tooltip="{{ ctrl.state.passwordInputType === 'password' ? 'Show password' : 'Hide password' }}"
-                >
-                  <pr-icon icon="ctrl.state.passwordInputType === 'password' ? 'eye-off' : 'eye'" size="'md'"></pr-icon>
+                <input id="password" ng-attr-type="{{ ctrl.state.passwordInputType }}" type="password" name="password"
+                  class="form-control pr-10" data-cy="auth-passwordInput" ng-model="ctrl.formValues.Password" ng-trim="false"
+                  ng-attr-placeholder="{{ ctrl.adminPortal ? 'Enter your password' : undefined }}" autocomplete="current-password" required />
+                <button type="button" data-cy="auth-passwordInputToggle" ng-click="ctrl.toggleShowPassword()"
+                  ng-class="ctrl.adminPortal ? 'absolute right-0 top-0 flex h-[34px] w-[50px] items-center justify-center border-none bg-transparent' : 'ew-login-eye'"
+                  ng-attr-aria-label="{{ ctrl.state.passwordInputType === 'password' ? '显示密码' : '隐藏密码' }}" aria-controls="password">
+                  <pr-icon icon="ctrl.state.passwordInputType === 'password' ? 'eye' : 'eye-off'" size="'md'"></pr-icon>
                 </button>
               </div>
             </div>
 
-            <div class="form-group overflow-auto" ng-if="ctrl.state.showStandardLogin">
-              <!-- login button -->
-              <div class="col-sm-12 d-flex py-1">
-                <button
-                  type="submit"
-                  class="btn btn-primary btn-lg btn-block"
-                  ng-click="ctrl.authenticateUser()"
-                  button-spinner="ctrl.state.loginInProgress"
-                  ng-disabled="ctrl.state.loginInProgress"
-                  data-cy="auth-loginButton"
-                >
-                  <span ng-hide="ctrl.state.loginInProgress">Login</span>
-                  <span ng-show="ctrl.state.loginInProgress">Login in progress...</span>
+            <div ng-if="ctrl.state.showStandardLogin" ng-class="ctrl.adminPortal ? 'form-group overflow-auto' : 'ew-login-submit'">
+              <div ng-class="{'col-sm-12 d-flex py-1': ctrl.adminPortal}">
+                <button type="submit" data-cy="auth-loginButton" ng-class="ctrl.adminPortal ? 'btn btn-primary btn-lg btn-block' : 'ew-login-action'"
+                  ng-disabled="ctrl.state.loginInProgress" button-spinner="ctrl.state.loginInProgress">
+                  <span>{{ ctrl.state.loginInProgress ? '正在登录…' : (ctrl.adminPortal ? 'Login' : '进入我的空间') }}</span>
+                  <svg ng-if="!ctrl.adminPortal && !ctrl.state.loginInProgress" aria-hidden="true" focusable="false" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14m-6-6 6 6-6 6"/></svg>
                 </button>
               </div>
             </div>
           </form>
-          <!-- !login form -->
-
-          <!-- error message -->
-          <div class="pull-right" ng-if="ctrl.state.AuthenticationError">
-            <pr-icon icon="'alert-triangle'" mode="'danger'"></pr-icon>
-            <span class="small text-danger">{{ ctrl.state.AuthenticationError }}</span>
+          <div ng-if="ctrl.state.loginInProgress && (ctrl.adminPortal || !ctrl.state.submitting)" role="status" class="text-center" button-spinner="true">正在连接登录服务…</div>
+          <div ng-if="ctrl.state.AuthenticationError" role="alert" ng-class="ctrl.adminPortal ? 'small text-danger' : 'ew-login-error'">
+            <span>{{ !ctrl.adminPortal && ctrl.state.AuthenticationError === 'Unable to login' ? '登录失败，请检查账号、密码或网络连接后重试。' : ctrl.state.AuthenticationError }}</span>
+            <button type="button" ng-if="!ctrl.state.showOAuthLogin && !ctrl.state.showStandardLogin" ng-click="ctrl.$onInit()">重新连接</button>
           </div>
         </div>
       </div>
 
-      <!-- !login panel -->
-      <div class="panel panel-default" ng-show="ctrl.state.loginInProgress">
-        <div class="panel-body">
-          <div class="form-group text-center">
-            <span class="small text-muted">Authentication in progress... <span button-spinner="true"></span></span>
-          </div>
-        </div>
+      <div ng-class="ctrl.adminPortal ? 'text-center' : 'ew-login-other'">
+        <a ng-if="ctrl.adminPortal" ui-sref="portainer.auth({portal: null})">返回用户登录</a>
+        <a ng-if="!ctrl.adminPortal" ui-sref="portainer.auth({portal: 'admin'})">
+          管理员入口
+          <svg aria-hidden="true" focusable="false" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17 17 7M7 7h10v10"/></svg>
+        </a>
       </div>
     </div>
   </div>
-  <!-- !login box -->
-</div>
+</main>

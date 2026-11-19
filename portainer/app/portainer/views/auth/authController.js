@@ -4,6 +4,7 @@ import { getEnvironments } from '@/react/portainer/environments/environment.serv
 import { dispatchCacheRefreshEvent } from '@/portainer/services/http-request.helper';
 import { isSameDocumentUrl, isValidReturnUrl } from '@/portainer/helpers/url-utils';
 import { storeReturnUrl, getReturnUrl, cleanReturnUrl } from '@/react/portainer/helpers/returnUrl';
+import './workspaceLogin.css';
 
 class AuthenticationController {
   /* @ngInject */
@@ -38,6 +39,7 @@ class AuthenticationController {
     this.LocalStorage = LocalStorage;
     this.StatusService = StatusService;
 
+    this.adminPortal = $stateParams.portal === 'admin';
     this.logo = this.StateManager.getState().application.logo;
     this.formValues = {
       Username: '',
@@ -49,6 +51,7 @@ class AuthenticationController {
       showStandardLogin: false,
       AuthenticationError: '',
       loginInProgress: true,
+      submitting: false,
       OAuthProvider: '',
     };
 
@@ -92,7 +95,9 @@ class AuthenticationController {
     if (!err) {
       err = {};
     }
-    this.Notifications.error('Failure', err, message);
+    if (this.adminPortal) {
+      this.Notifications.error('Failure', err, message);
+    }
     this.state.loginInProgress = false;
   }
 
@@ -214,13 +219,20 @@ class AuthenticationController {
       var username = this.formValues.Username;
       var password = this.formValues.Password;
       this.state.loginInProgress = true;
+      this.state.submitting = true;
+      this.state.AuthenticationError = '';
       await this.internalLoginAsync(username, password);
     } catch (err) {
       this.error(err, 'Unable to login');
+    } finally {
+      this.state.submitting = false;
     }
   }
 
   authenticateUser() {
+    if (this.state.loginInProgress || !this.state.showStandardLogin) {
+      return;
+    }
     this.setPasswordInputType('password');
     return this.$async(this.authenticateUserAsync);
   }
@@ -256,6 +268,8 @@ class AuthenticationController {
   }
 
   async onInit() {
+    this.state.loginInProgress = true;
+    this.state.AuthenticationError = '';
     try {
       const settings = await this.SettingsService.publicSettings();
       this.state.showOAuthLogin = settings.AuthenticationMethod === 3;
@@ -301,7 +315,7 @@ class AuthenticationController {
 
       await this.authEnabledFlowAsync();
     } catch (err) {
-      this.Notifications.error('Failure', err, 'Unable to retrieve public settings');
+      this.error(err, 'Unable to retrieve public settings');
     }
   }
 

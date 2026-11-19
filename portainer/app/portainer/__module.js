@@ -141,7 +141,7 @@ angular
 
       var authentication = {
         name: 'portainer.auth',
-        url: '/auth',
+        url: '/auth?portal',
         params: {
           reload: false,
         },

@@ -28,6 +28,8 @@ class LogoutController {
   async logoutAsync() {
     const error = this.$transition$.params().error;
     const settings = await this.SettingsService.publicSettings();
+    const adminPortal = this.Authentication.isPureAdmin();
+    const userId = this.Authentication.getUserDetails().ID;
 
     try {
       await this.Authentication.logout();
@@ -37,10 +39,10 @@ class LogoutController {
 
       cleanReturnUrl();
       this.LocalStorage.storeLogoutReason(error);
-      if (settings.OAuthLogoutURI && this.Authentication.getUserDetails().ID !== 1) {
+      if (settings.OAuthLogoutURI && userId !== 1) {
         this.$window.location.href = settings.OAuthLogoutURI;
       } else {
-        this.$state.go('portainer.auth', { reload: true });
+        this.$state.go('portainer.auth', { reload: true, portal: adminPortal ? 'admin' : null });
       }
     }
   }
