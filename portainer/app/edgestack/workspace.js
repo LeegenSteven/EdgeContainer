@@ -133,14 +133,15 @@
     const glyph = deviceIcon(d);
     const count = taskList(d).length, active=taskList(d).filter(t=>t.runtimeState==='running').length;
     const caption=!d.online?'管理连接离线 · 状态待确认':active?`${active} 项任务实例运行中${count>active?' · '+(count-active)+' 项运行待确认':''}`:count?`${count} 项任务已登记`:'管理连接在线 · 暂无任务';
-    return `<g class="ew-station ${d.online?'':'ew-offline'}" ${visible?'':'style="visibility:hidden;pointer-events:none" aria-hidden="true"'} transform="translate(${x} ${y}) ${total===1?'scale(1.5)':''}" data-action="device" data-id="${esc(id(d))}" tabindex="${visible?0:-1}" role="button" aria-label="${esc(d.name)}，${d.online?'管理连接在线':'管理连接离线'}，${count} 项任务"><title>${esc(d.name)} · ${count} 项任务</title><ellipse class="ew-station-halo" cx="0" cy="70" rx="105" ry="61" fill="#e9eddf" opacity="0"/><ellipse cx="15" cy="104" rx="108" ry="28" fill="url(#ew-shadow)"/><g class="ew-furniture"><path d="m-87 33 112-28 79 39-113 31Z" fill="#fff" stroke="#dce1d9"/><path d="m-87 33 78 37v9l-78-37Z" fill="#e4e9df"/><path d="m-9 70 113-26v9L-9 79Z" fill="#f2f4ec"/><path d="m-77 44 7 3v58l-7-4Zm168 10 6-2v50l-6 3ZM-6 78l6-2v57l-6 2Z" fill="#d3dccf"/><path d="m-75 101 70 30 99-27" fill="none" stroke="#e6eae1" stroke-width="3"/><path d="m-43-18 60-14v48l-60 14Z" fill="#d6ded2" stroke="#c6d0c1"/><path d="m-39-14 52-12v38l-52 12Z" fill="${d.online?'#dce6d3':'#e4e8e0'}"/><path d="m-35-9 44-10v29l-44 10Z" fill="${d.online?'#334c40':'#aab6a9'}"/><g transform="translate(-22 -7) skewY(-13)" aria-hidden="true"><svg class="ew-device-screen" data-icon="${glyph}" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="${d.online?'#e2efd7':'#283b32'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPaths[glyph]}</svg></g><path d="m-9 24 7-2v10l-7 2Z" fill="#b8c6af"/><path d="m-21 35 21-5 14 6-20 5Z" fill="#d8e0d1"/><path d="m-38 47 39-9 16 7-39 9Z" fill="#e5eade"/><path d="m47 2 21-5 17 9-20 5Z" fill="#f4f5eb"/><path d="m47 2 18 9v34l-18-9Z" fill="#dfe6d6"/><path d="m65 11 20-5v34l-20 5Z" fill="#edf0e4"/><path d="m71 17 8-2M71 22l8-2" stroke="#bac9ae"/><circle cx="73" cy="33" r="2" fill="${d.online?'#79ac75':'#a8b3a0'}"/><path d="m-54 67 37-8 23 12-37 9Z" fill="#b9c8ad"/><path d="m-54 67 2 29 26 11-5-27Z" fill="#cbd6c1"/><path d="m-29 103-2 22m0-3-18-1m18 1 15-10" stroke="#bdcbb2" stroke-width="4" stroke-linecap="round"/></g><g transform="translate(-26 51)">${mascot(!d.online)}</g><g transform="translate(0 -76)" class="ew-node-label"><text text-anchor="middle" class="ew-node-name">${esc(d.name?.length>19?d.name.slice(0,18)+'…':d.name)}</text><text y="21" text-anchor="middle" class="ew-node-caption">${esc(caption)}</text><circle cx="${Math.min((d.name||'').length*6+12,110)}" cy="-5" r="3" fill="${d.online?'#68a277':'#b7bdb2'}"/></g><g class="ew-event-layer" data-device-activity="${esc(id(d))}"></g></g>`;
+    return `<g class="ew-station ${d.online?'':'ew-offline'}" ${visible?'':'style="visibility:hidden;pointer-events:none" aria-hidden="true"'} transform="translate(${x} ${y}) ${total===1?'scale(1.5)':''}" data-action="device" data-id="${esc(id(d))}" tabindex="${visible?0:-1}" role="button" aria-label="${esc(d.name)}，${d.online?'管理连接在线':'管理连接离线'}，${count} 项任务"><title>${esc(d.name)} · ${esc(caption)}</title><ellipse class="ew-station-halo" cx="0" cy="70" rx="105" ry="61" fill="#e9eddf" opacity="0"/><ellipse cx="15" cy="104" rx="108" ry="28" fill="url(#ew-shadow)"/><g class="ew-furniture"><path d="m-87 33 112-28 79 39-113 31Z" fill="#fff" stroke="#dce1d9"/><path d="m-87 33 78 37v9l-78-37Z" fill="#e4e9df"/><path d="m-9 70 113-26v9L-9 79Z" fill="#f2f4ec"/><path d="m-77 44 7 3v58l-7-4Zm168 10 6-2v50l-6 3ZM-6 78l6-2v57l-6 2Z" fill="#d3dccf"/><path d="m-75 101 70 30 99-27" fill="none" stroke="#e6eae1" stroke-width="3"/><path d="m-43-18 60-14v48l-60 14Z" fill="#d6ded2" stroke="#c6d0c1"/><path d="m-39-14 52-12v38l-52 12Z" fill="${d.online?'#dce6d3':'#e4e8e0'}"/><path d="m-35-9 44-10v29l-44 10Z" fill="${d.online?'#334c40':'#aab6a9'}"/><g transform="translate(-22 -7) skewY(-13)" aria-hidden="true"><svg class="ew-device-screen" data-icon="${glyph}" width="19" height="19" viewBox="0 0 24 24" fill="none" stroke="${d.online?'#e2efd7':'#283b32'}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${iconPaths[glyph]}</svg></g><path d="m-9 24 7-2v10l-7 2Z" fill="#b8c6af"/><path d="m-21 35 21-5 14 6-20 5Z" fill="#d8e0d1"/><path d="m-38 47 39-9 16 7-39 9Z" fill="#e5eade"/><path d="m47 2 21-5 17 9-20 5Z" fill="#f4f5eb"/><path d="m47 2 18 9v34l-18-9Z" fill="#dfe6d6"/><path d="m65 11 20-5v34l-20 5Z" fill="#edf0e4"/><path d="m71 17 8-2M71 22l8-2" stroke="#bac9ae"/><circle cx="73" cy="33" r="2" fill="${d.online?'#79ac75':'#a8b3a0'}"/><path d="m-54 67 37-8 23 12-37 9Z" fill="#b9c8ad"/><path d="m-54 67 2 29 26 11-5-27Z" fill="#cbd6c1"/><path d="m-29 103-2 22m0-3-18-1m18 1 15-10" stroke="#bdcbb2" stroke-width="4" stroke-linecap="round"/></g><g transform="translate(-26 51)">${mascot(!d.online)}</g><foreignObject x="-111" y="-97" width="222" height="60" class="ew-node-label" aria-hidden="true"><div xmlns="http://www.w3.org/1999/xhtml"><div class="ew-node-title"><span class="ew-node-name">${esc(d.name)}</span><i class="ew-node-dot"></i></div><div class="ew-node-caption">${esc(caption)}</div></div></foreignObject><g class="ew-event-layer" data-device-activity="${esc(id(d))}"></g></g>`;
   }
   function plant(x,y) { return `<g transform="translate(${x} ${y})"><ellipse cy="39" rx="24" ry="8" fill="#cbd5c2" opacity=".22"/><path d="M-16 3h32l-5 33q-11 6-22 0Z" fill="#e4ddd0"/><ellipse cy="3" rx="16" ry="6" fill="#d7cdbb"/><path d="M0 3v-39M0-19q-29 0-24-21Q0-39 0-19ZM0-6q26 0 23-21Q0-25 0-6Z" fill="#9db48a" stroke="#8da67b"/><path d="M0-30q17-2 12-23Q-6-47 0-30Z" fill="#b3c69d"/></g>`; }
   function scene(devices,options={}) {
     const capacity=options.slots?Math.max(devices.length,...devices.map(d=>(options.slots.get(id(d))||0)+1)):devices.length;
     const rows = devices.length===1?1:Math.ceil(capacity/(options.columns||(devices.length<=4?2:4)));
     const h = Math.max(510, rows * 235 + 115), w=devices.length===1?620:1020;
-    return `<svg class="ew-scene ${devices.length===1?'ew-scene-single':''}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" aria-label="设备工作空间，共 ${devices.length} 台已授权设备"><defs><radialGradient id="ew-shadow"><stop stop-color="#a7b29d" stop-opacity=".25"/><stop offset="1" stop-color="#a7b29d" stop-opacity="0"/></radialGradient><pattern id="ew-floor" width="100" height="56" patternUnits="userSpaceOnUse"><path d="M0 28 50 0l50 28-50 28Z" stroke="#e7e9e1" stroke-width=".65" fill="none"/></pattern><linearGradient id="ew-floorfade" x2="0" y2="1"><stop stop-color="#f5f6f0"/><stop offset="1" stop-color="#fafbf6"/></linearGradient></defs><rect x="5" y="1" width="${w-10}" height="${h-2}" rx="28" fill="url(#ew-floorfade)"/><rect x="8" y="10" width="${w-16}" height="${h-20}" rx="28" fill="url(#ew-floor)" opacity=".6"/><path d="M40 72 156 8h54L78 84Z" fill="#fff" opacity=".7"/><path d="m680 8 280 0-240 135-280 0Z" fill="#fff" opacity=".55"/>${plant(w-70,74)}${plant(60,h-84)}<g class="ew-room-sign" transform="translate(54 37)"><circle r="4" fill="#91ab7c"/><text x="13" y="4">EVERY DEVICE, A LITTLE WORLD</text></g>${devices.map((d,i)=>station(d,options.slots?.get(id(d))??i,devices.length,options.columns,options.visible?options.visible.has(id(d)):true)).join('')}<text x="${w-60}" y="${h-24}" text-anchor="end" class="ew-floor-caption">EDGE / SPACE</text></svg>`;
+    const layoutClass = devices.length === 1 ? 'ew-scene-single' : rows <= 2 ? 'ew-scene-fit' : '';
+    return `<svg class="ew-scene ${layoutClass}" viewBox="0 0 ${w} ${h}" xmlns="http://www.w3.org/2000/svg" aria-label="设备工作空间，共 ${devices.length} 台已授权设备"><defs><radialGradient id="ew-shadow"><stop stop-color="#a7b29d" stop-opacity=".25"/><stop offset="1" stop-color="#a7b29d" stop-opacity="0"/></radialGradient><pattern id="ew-floor" width="100" height="56" patternUnits="userSpaceOnUse"><path d="M0 28 50 0l50 28-50 28Z" stroke="#e7e9e1" stroke-width=".65" fill="none"/></pattern><linearGradient id="ew-floorfade" x2="0" y2="1"><stop stop-color="#f5f6f0"/><stop offset="1" stop-color="#fafbf6"/></linearGradient></defs><rect class="ew-floor-base" x="5" y="1" width="${w-10}" height="${h-2}" rx="28" fill="url(#ew-floorfade)"/><rect x="8" y="10" width="${w-16}" height="${h-20}" rx="28" fill="url(#ew-floor)" opacity=".6"/>${devices.length > 1 ? '<path d="M40 72 156 8h54L78 84Z" fill="#fff" opacity=".7"/><path d="m680 8 280 0-240 135-280 0Z" fill="#fff" opacity=".55"/>' : ''}${plant(w-70,74)}${plant(60,h-84)}${devices.map((d,i)=>station(d,options.slots?.get(id(d))??i,devices.length,options.columns,options.visible?options.visible.has(id(d)):true)).join('')}</svg>`;
   }
   function Workspace(element, params) {
     const root = element.querySelector('[data-edgestack-workspace]') || element;
@@ -165,6 +166,7 @@
     let statusCheckedAt = null, statusStale = false, refreshing = 0;
     const requests = new Set(), timers = new Set(),sessionHints=new Map();
     let delivery;
+    let composingSearch = false;
     const eventFailures = new Map(), eventCoverageByDevice = new Map();
     let activeEvidence = [];
     const s = {view:normalView(params.view), deviceId:String(params.device || ''), devices:[],loading:true,error:'',notice:'',tab:'overview',query:remembered.query,filter:remembered.filter,layout:remembered.layout,libraryLayout:remembered.libraryLayout,relationsOpen:false,events:[],eventPeriod:remembered.eventPeriod||'24',eventType:remembered.eventType||'all',eventSession:'',eventWindow:null,eventCursors:{},eventCoverage:null,eventCursor:'',eventLoading:false,drawerLoading:false,summary:null,summaryQuestion:'',summaryBusy:false,summaryError:'',summaryWindow:null,question:'',period:'24',models:null,modelTaskId:'',preview:null,previousModelLabel:'',modelBusy:false,evidence:null};
@@ -206,18 +208,95 @@
       return `<ol class="ew-timeline ${compact?'ew-timeline-compact':''}">${events.map(e=>`<li><span class="ew-event-icon">${icon(eventIcon(e))}</span><div><div class="ew-event-meta"><span>${esc(eventRole(e))}${eventPhase(e.phase)?' · '+esc(eventPhase(e.phase)):''}${integrationTest(e)?' <em class="ew-integration-label">接入测试</em>':''}</span><time>${esc(time(e.occurredAt||e.timestamp))}</time></div><p>${esc(eventText(e))}</p>${!compact?`<span class="ew-event-device">${esc(s.devices.find(d=>id(d)===String(e.deviceId))?.name||'设备名称暂不可用')}</span>`:''}</div></li>`).join('')}</ol>`;
     }
     function header() {
-      const online=s.devices.filter(d=>d.online).length;
-      return `<header class="ew-header"><div><div class="ew-eyebrow">YOUR EDGE, TOGETHER${window.EdgeStackDemo?' <span class="ew-demo-label">演示空间 · 模拟数据</span>':''}${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}</div><h1>${titles[s.view]}<span class="ew-heading-dot">.</span></h1><p>${({space:'每台设备都有自己的小天地。看看它们今天在忙什么。',tasks:'业务在设备上协作，进展在这里汇聚。',interactions:'留住与你的设备发生的每一次有意义的互动。',library:'了解任务使用的模型，以及数据安放的位置。'})[s.view]}</p></div><div class="ew-header-actions"><button class="ew-button ew-button-quiet" data-action="delivery">部署模型</button>${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}<button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button><span class="ew-avatar" aria-label="当前用户">${esc((auth?.getUserDetails()?.Username||auth?.getUserDetails()?.username||'我').slice(0,1).toUpperCase())}</span></div></header>${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}${s.loading?'':`<div class="ew-space-meta"><span><i class="ew-status-dot"></i>${online} 台管理在线</span><span>${s.devices.length} 台设备</span><span>${allTasks().length} 项业务任务</span><span class="ew-status-freshness">${statusStale?'设备状态暂未更新 · 上次同步':'设备状态已同步'} <time>${esc(time(statusCheckedAt))}</time></span></div>`}`;
+      const online = s.devices.filter(device => device.online).length;
+      const stats = statusCheckedAt ? `
+        <div class="ew-readings">
+          <dl class="ew-metrics" aria-label="授权设备概览">
+            <div><dt>授权设备</dt><dd>${s.devices.length}</dd></div>
+            <div><dt>管理在线</dt><dd>${online}</dd></div>
+            <div><dt>业务任务</dt><dd>${allTasks().length}</dd></div>
+          </dl>
+          <span class="ew-status-freshness" data-stale="${statusStale}">
+            <i class="ew-status-dot" aria-hidden="true"></i>
+            ${statusStale?'设备状态暂未更新 · 上次同步':'设备状态已同步'}
+            <time datetime="${esc(statusCheckedAt)}">${esc(time(statusCheckedAt))}</time>
+          </span>
+        </div>` : '';
+      return `<header class="ew-header">
+        <h1>${titles[s.view]}</h1>
+        <div class="ew-header-actions">
+          ${isAdmin()?'<a class="ew-native-return" href="#!/home" data-action="native">返回管理后台 '+icon('arrow')+'</a>':''}
+          <button class="ew-icon-button" data-action="refresh" aria-label="刷新空间" title="刷新空间">${icon('refresh')}</button>
+          <button class="ew-button ew-deploy" data-action="delivery">${icon('library')}部署模型</button>
+        </div>
+      </header>
+      ${error()}${s.notice?`<div class="ew-notice" role="status">${icon('check')}${esc(s.notice)}</div>`:''}
+      ${stats}`;
     }
+
+    function deviceList(devices) {
+      return `<div class="ew-device-list">${devices.map(device => {
+        const glyph = deviceIcon(device);
+        const recent = time(device.lastInteractionAt);
+        return `<button data-action="device" data-id="${esc(id(device))}">
+          <span class="ew-list-device" data-icon="${glyph}">${icon(glyph)}</span>
+          <span class="ew-device-name"><strong>${esc(device.name)}</strong><small>${taskList(device).length} 项任务 · ${recent === '尚无记录' ? '尚无互动记录' : '最近互动 ' + esc(recent)}</small></span>
+          <span class="ew-status ${device.online?'':'ew-status-off'}">${device.online?'管理连接在线':'管理连接离线'}</span>${icon('arrow')}
+        </button>`;
+      }).join('')}</div>`;
+    }
+
+    function deviceScene(devices) {
+      const floor = scene(s.devices, {
+        visible: new Set(devices.map(id)),
+        slots: activity.slots,
+        columns: activity.columns,
+      });
+      if (s.devices.length !== 1) return floor;
+      const device = devices[0];
+      return `<div class="ew-single-device">
+        <div class="ew-device-profile">
+          <span class="ew-status ${device.online?'':'ew-status-off'}">${device.online?'管理连接在线':'管理连接离线'}</span>
+          <h2>${esc(device.name)}</h2>
+          <dl><dt>最近管理连接</dt><dd>${esc(time(device.lastSeenAt))}</dd>
+              <dt>最近互动</dt><dd>${esc(time(device.lastInteractionAt))}</dd></dl>
+          <button class="ew-profile-link" data-action="device" data-id="${esc(id(device))}">查看设备详情 ${icon('arrow')}</button>
+        </div>
+        ${floor}
+      </div>`;
+    }
+
     function space() {
-      if(!s.devices.length)return empty('你的空间，等待第一位伙伴','请联系管理员接入设备并授予访问权限。接入后的设备会在这里拥有自己的工作台。');
-      const devices=filteredDevices();
-      return `<section class="ew-scene-panel"><div class="ew-scene-toolbar"><div class="ew-segment" aria-label="设备筛选">${[['all','全部'],['online','在线'],['offline','离线']].map(([key,label])=>`<button data-action="filter" data-value="${key}" aria-pressed="${s.filter===key}">${label}</button>`).join('')}</div><div class="ew-toolbar-right"><label class="ew-search">${icon('search')}<input name="search" placeholder="找一台设备" value="${esc(s.query)}" aria-label="查找设备"></label><button class="ew-icon-button" data-action="layout" aria-label="${s.layout==='space'?'切换列表视图':'切换空间视图'}" aria-pressed="${s.layout==='list'}">${icon(s.layout==='space'?'list':'space')}</button></div></div><div class="ew-scene-scroll">${!devices.length?empty('没有找到这台设备','试试其他名称或查看全部设备。',true):s.layout==='list'?`<div class="ew-device-list">${devices.map(d=>`<button data-action="device" data-id="${esc(id(d))}"><span class="ew-list-device" data-icon="${deviceIcon(d)}">${icon(deviceIcon(d))}</span><span><strong>${esc(d.name)}</strong><small>${taskList(d).length} 项任务 · 最近互动 ${time(d.lastInteractionAt)}</small></span><span class="ew-status ${d.online?'':'ew-status-off'}">${d.online?'管理连接在线':'管理连接离线'}</span>${icon('arrow')}</button>`).join('')}</div>`:scene(s.devices,{visible:new Set(devices.map(id)),slots:activity.slots,columns:activity.columns})}</div><div class="ew-scene-footer"><span><i class="ew-status-dot"></i>点击工作台，看看设备的小世界</span><span>${devices.length} 台设备 · ${s.layout==='space'?'空间视图':'列表视图'}</span></div></section>`;
+      if (!s.devices.length) return empty('你的空间，等待第一位伙伴','请联系管理员接入设备并授予访问权限。接入后的设备会在这里拥有自己的工作台。');
+      const devices = filteredDevices();
+      const list = s.layout === 'list';
+      let content;
+      if (!devices.length) {
+        content = `<div class="ew-filter-empty">
+          ${empty('没有匹配的设备','可以清除搜索和在线状态筛选，查看全部设备。',true)}
+          <button class="ew-profile-link" data-action="reset-devices">清除筛选</button>
+        </div>`;
+      } else {
+        content = list ? deviceList(devices) : deviceScene(devices);
+      }
+      return `<section class="ew-scene-panel" aria-label="设备工作区">
+        <div class="ew-scene-toolbar">
+          <div class="ew-segment" role="group" aria-label="设备筛选">
+            ${[['all','全部'],['online','在线'],['offline','离线']].map(([key,label])=>`<button data-action="filter" data-value="${key}" aria-pressed="${s.filter===key}">${label}</button>`).join('')}
+          </div>
+          <div class="ew-toolbar-right">
+            <label class="ew-search">${icon('search')}<input name="search" placeholder="搜索设备名称" value="${esc(s.query)}" aria-label="查找设备" autocomplete="off"></label>
+            <button class="ew-layout-button" data-action="layout" aria-label="${list?'切换空间视图':'切换列表视图'}">${icon(list?'space':'list')}<span>${list?'空间视图':'列表视图'}</span></button>
+          </div>
+        </div>
+        <div class="ew-scene-scroll" data-layout="${s.layout}">${content}</div>
+        <div class="ew-scene-footer"><span>${list?'选择设备查看详情':'选择工位查看设备详情'}</span><span>${devices.length} 台设备 · ${list?'列表视图':'空间视图'}</span></div>
+      </section>`;
     }
     function tasks() {
       const tasks=allTasks();
       if(!tasks.length)return empty('还没有业务任务','设备已接入后，已识别的业务应用会出现在这里。系统 Agent 不计入业务任务。');
-      return `<div class="ew-page-intro"><h2>设备上的业务任务 <span>${tasks.length}</span></h2><p>一个任务可以由一个或多个容器协作完成。</p></div><div class="ew-task-list">${tasks.map((t,i)=>`<button class="ew-task-row" data-action="task" data-id="${esc(t.id)}" data-device="${esc(t.deviceId)}"><span class="ew-task-art tone-${i%3}">${icon(taskIcon(t.kind))}</span><span class="ew-task-main"><strong>${esc(t.name)}</strong><small>${esc(t.deviceName)} <b>·</b> ${esc(taskKind(t.kind))}</small></span><span class="ew-task-detail">${(t.models||[]).length?esc(t.models.map(m=>m.name||m.packageId).join('、')):'尚未声明模型'}<small>${(t.dataLocations||[]).length} 处登记的数据位置</small></span><span class="ew-task-state"><i class="ew-status-dot ${t.runtimeState==='running'?'':'ew-dot-muted'}"></i>${esc(taskRuntime(t))}</span>${icon('arrow')}</button>`).join('')}</div>`;
+      return `<div class="ew-page-intro"><h2>设备上的业务任务 <span>${tasks.length}</span></h2><p>一个任务可以由一个或多个容器协作完成。</p></div><div class="ew-task-list">${tasks.map(t=>`<button class="ew-task-row" data-action="task" data-id="${esc(t.id)}" data-device="${esc(t.deviceId)}"><span class="ew-task-art" data-icon="${taskIcon(t.kind)}">${icon(taskIcon(t.kind))}</span><span class="ew-task-main"><strong>${esc(t.name)}</strong><small>${esc(t.deviceName)} <b>·</b> ${esc(taskKind(t.kind))}</small></span><span class="ew-task-detail">${(t.models||[]).length?esc(t.models.map(m=>m.name||m.packageId).join('、')):'尚未声明模型'}<small>${(t.dataLocations||[]).length} 处登记的数据位置</small></span><span class="ew-task-state"><i class="ew-status-dot ${t.runtimeState==='running'?'':'ew-dot-muted'}"></i>${esc(taskRuntime(t))}</span>${icon('arrow')}</button>`).join('')}</div>`;
     }
     function rememberSessions(events){for(const event of events){if(!event.sessionId)continue;const at=Date.parse(event.occurredAt),hint=sessionHints.get(event.sessionId),user=/voice\.(user_utterance|transcript)$/.test(event.type);if(!hint)sessionHints.set(event.sessionId,{at,text:eventText(event).slice(0,24),user,deviceId:String(event.deviceId)});else{hint.at=Math.min(hint.at,at);if(user&&(!hint.user||at<=hint.at)){hint.text=eventText(event).slice(0,24);hint.user=true;}}}}
     function eventMatches(event){const types=eventTypeGroups[s.eventType];return (!types||types.split(',').includes(event.type))&&(!s.eventSession||event.sessionId===s.eventSession)&&Date.parse(event.occurredAt)>=Date.now()-Number(s.eventPeriod)*3600000;}
@@ -238,7 +317,7 @@
       return failure+content+more;
     }
     function interactions() {
-      return `<div class="ew-records-top"><div><h2>每一次互动，都有迹可循</h2><p class="ew-muted">仅呈现业务事件中的文本记录。</p></div><label class="ew-select-label">设备<select name="eventsDevice"><option value="">全部设备</option>${s.devices.map(d=>`<option value="${esc(id(d))}" ${id(d)===s.deviceId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></label></div>${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-records">${eventResults()}</section>`;
+      return `<div class="ew-records-top"><div><h2>设备互动时间线</h2><p class="ew-muted">仅呈现业务事件中的文本记录。</p></div><label class="ew-select-label">设备<select name="eventsDevice"><option value="">全部设备</option>${s.devices.map(d=>`<option value="${esc(id(d))}" ${id(d)===s.deviceId?'selected':''}>${esc(d.name)}</option>`).join('')}</select></label></div>${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-records">${eventResults()}</section>`;
     }
     function modelName(m) {return `${m.name||m.packageId||'未命名模型'}${m.version?' · '+m.version:''}`;}
     function dataLocation(location) {
@@ -253,12 +332,12 @@
       function locationNodes(rows,fallback){return rows.length?rows.map(l=>dataLocation(l)).join(''):`<p class="ew-relation-unknown">${esc(fallback)}</p>`;}
       return `<section class="ew-relations ${compact?'ew-relations-compact':''}" aria-label="设备任务与数据关系"><header><h3>设备、任务与数据的联系</h3><p>连线表示当前授权范围内的登记关系，位置状态另行标明。</p></header>${devices.map(d=>`<article class="ew-relation-device"><div class="ew-relation-node ew-relation-origin">${icon('space')}<span><strong>${esc(d.name)}</strong><small>${d.online?'管理连接在线':'管理连接离线'}</small></span></div><div class="ew-relation-tasks">${taskList(d).length?taskList(d).map(t=>{const locations=(t.dataLocations||[]).map(l=>typeof l==='object'&&l?l:{path:l});const server=locations.filter(l=>l.kind==='server'||l.type==='server');const model=locations.filter(l=>!server.includes(l)&&['model','model-file','model_files'].includes(l.purpose||l.usage));const business=locations.filter(l=>!server.includes(l)&&['business','business-data','conversation','interaction','events','data'].includes(l.purpose||l.usage));const unknown=locations.filter(l=>!server.includes(l)&&!model.includes(l)&&!business.includes(l));return `<section class="ew-relation-task"><div class="ew-relation-node">${icon('tasks')}<span><strong>${esc(t.name)}</strong><small>${esc(taskKind(t.kind))} · ${esc(taskRuntime(t))}</small></span></div><div class="ew-relation-branches"><div><h4>${icon('data')}业务数据</h4>${locationNodes(business,'业务数据位置待登记')}${unknown.length?`<div class="ew-relation-unclassified"><strong>用途待登记</strong>${locationNodes(unknown,'')}</div>`:''}</div><div><h4>${icon('library')}模型文件</h4>${(t.models||[]).map(m=>`<p class="ew-relation-model"><strong>${esc(modelName(m))}</strong><small>${esc(modelPurpose(m.slot))} · ${esc(stateLabel(m.state))}</small></p>`).join('')}${locationNodes(model,'模型文件位置待登记')}</div><div><h4>${icon('data')}管理中枢记录</h4>${locationNodes(server,'尚未登记管理中枢记录')}</div></div></section>`;}).join(''):'<p class="ew-relation-unknown">尚未登记业务任务</p>'}</div></article>`).join('')}</section>`;
     }
-    function libraryMode(){return `<div class="ew-library-mode ew-segment" aria-label="模型与数据视图"><button data-action="library-layout" data-value="details" aria-pressed="${s.libraryLayout!=='relations'}">详情列表</button><button data-action="library-layout" data-value="relations" aria-pressed="${s.libraryLayout==='relations'}">关系视图</button></div>`;}
+    function libraryMode(){return `<div class="ew-library-mode ew-segment" role="group" aria-label="模型与数据视图"><button data-action="library-layout" data-value="details" aria-pressed="${s.libraryLayout!=='relations'}">详情列表</button><button data-action="library-layout" data-value="relations" aria-pressed="${s.libraryLayout==='relations'}">关系视图</button></div>`;}
     function drawerModels(d){return `<button class="ew-text-button ew-relations-toggle" data-action="relations">${icon('library')}${s.relationsOpen?'返回模型与位置详情':'查看设备、任务与数据关系'}</button>${s.relationsOpen?relationships([d],true):taskList(d).length?taskList(d).map(taskModels).join(''):empty('尚无模型与数据声明','这台设备还没有已识别的业务任务。',true)}`;}
     function library() {
       const tasks=allTasks();
       if(s.libraryLayout==='relations')return libraryMode()+relationships(s.devices);
-      return `${libraryMode()}<div class="ew-page-intro"><h2>模型有来处，数据有归处</h2><p>模型状态来自任务记录；数据位置显示管理员登记及核验情况。</p></div>${!tasks.length?empty('尚无模型与数据声明','业务任务接入后，这里会显示它使用的模型和登记的数据位置。'):tasks.map(t=>`<section class="ew-library-section"><header><span class="ew-task-art">${icon('library')}</span><div><h3>${esc(t.name)}</h3><p>${esc(t.deviceName)}</p></div><button class="ew-text-button" data-action="task" data-id="${esc(t.id)}" data-device="${esc(t.deviceId)}">查看与管理 ${icon('arrow')}</button></header><div class="ew-library-columns"><div><h4>任务模型</h4>${t.models?.length?t.models.map(m=>`<div class="ew-model-line">${icon('library')}<span><strong>${esc(modelName(m))}</strong><small>${esc(modelPurpose(m.slot))} · ${esc(stateLabel(m.state||'unknown'))}</small>${m.observedAt&&time(m.observedAt)!=='尚无记录'?`<small>上次确认 ${esc(time(m.observedAt))}</small>`:''}</span></div>`).join(''):'<p class="ew-muted">此任务尚未声明模型信息。</p>'}</div><div><h4>登记的数据位置</h4>${t.dataLocations?.length?t.dataLocations.map(dataLocation).join(''):'<p class="ew-muted">此任务尚未登记数据位置。</p>'}</div></div></section>`).join('')}`;
+      return `${libraryMode()}<div class="ew-page-intro"><h2>任务模型与数据位置</h2><p>模型状态来自任务记录；数据位置显示管理员登记及核验情况。</p></div>${!tasks.length?empty('尚无模型与数据声明','业务任务接入后，这里会显示它使用的模型和登记的数据位置。'):tasks.map(t=>`<section class="ew-library-section"><header><span class="ew-task-art">${icon('library')}</span><div><h3>${esc(t.name)}</h3><p>${esc(t.deviceName)}</p></div><button class="ew-text-button" data-action="task" data-id="${esc(t.id)}" data-device="${esc(t.deviceId)}">查看与管理 ${icon('arrow')}</button></header><div class="ew-library-columns"><div><h4>任务模型</h4>${t.models?.length?t.models.map(m=>`<div class="ew-model-line">${icon('library')}<span><strong>${esc(modelName(m))}</strong><small>${esc(modelPurpose(m.slot))} · ${esc(stateLabel(m.state||'unknown'))}</small>${m.observedAt&&time(m.observedAt)!=='尚无记录'?`<small>上次确认 ${esc(time(m.observedAt))}</small>`:''}</span></div>`).join(''):'<p class="ew-muted">此任务尚未声明模型信息。</p>'}</div><div><h4>登记的数据位置</h4>${t.dataLocations?.length?t.dataLocations.map(dataLocation).join(''):'<p class="ew-muted">此任务尚未登记数据位置。</p>'}</div></div></section>`).join('')}`;
     }
     function sourceCoverage(){const c=s.sourceCoverage;if(!Array.isArray(c?.gaps)||!c.gaps.includes('outside_retention'))return coverage(c);const gaps=c.gaps.filter(g=>g!=='outside_retention');return coverage({...c,gaps,complete:gaps.length?c.complete:true});}
     function drawerSources(d) {
@@ -294,7 +373,7 @@
     function drawer() {
       if(!s.deviceId||s.view==='interactions')return '';
       const d=selected();
-      return `<div class="ew-drawer-backdrop" data-action="close-drawer"></div><aside class="ew-drawer" role="dialog" aria-modal="true" aria-label="${esc(d?.name||'设备详情')}" tabindex="-1"><header class="ew-drawer-header"><div class="ew-drawer-device-art"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot(!d?.online)}</svg></div><div><p class="ew-eyebrow">A LITTLE WORLD</p><h2>${esc(d?.name||'正在读取设备')}</h2><p><span class="ew-status ${d?.online?'':'ew-status-off'}">${d?.online?'管理连接在线':'管理连接离线'}</span> <span class="ew-muted">${taskList(d).length} 项业务任务</span></p></div><button class="ew-icon-button ew-drawer-close" data-action="close-drawer" aria-label="关闭设备详情">${icon('close')}</button></header><nav class="ew-drawer-tabs" aria-label="设备内容">${[['overview','概览'],['interactions','互动记录'],['models','模型与数据']].map(([key,label])=>`<button data-action="tab" data-value="${key}" aria-current="${s.tab===key?'page':'false'}">${label}</button>`).join('')}</nav><div class="ew-drawer-body" data-scroll-key="${esc(s.deviceId+':'+s.tab)}">${error()}${s.drawerLoading?loading('正在读取设备的小世界…'):!d?empty('没有找到这台设备','它可能已被移除，或当前账号没有访问权限。',true):s.tab==='overview'?`<div class="ew-device-note"><i class="ew-status-dot ${d.online?'':'ew-dot-muted'}"></i><span>${d.online?'管理连接在线，业务状态请查看任务记录':'管理连接离线，业务状态待确认'}<small>最近联系 ${esc(time(d.lastSeenAt))}</small></span></div><section class="ew-drawer-section"><h3>设备任务 <span>${taskList(d).length}</span></h3>${taskList(d).length?taskList(d).map(t=>`<button class="ew-drawer-task" data-action="task-tab" data-id="${esc(t.id)}"><span class="ew-task-art">${icon(taskIcon(t.kind))}</span><span><strong>${esc(t.name)}</strong><small>${esc(taskRuntime(t))} · ${(t.models||[]).length} 个模型</small><small>登记状态：${esc(stateLabel(t.state))}${t.runtimeObservedAt?' · 观测 '+esc(time(t.runtimeObservedAt)):''}</small></span>${icon('arrow')}</button>${voiceTest(t)}`).join(''):empty('暂无业务任务','设备在线接入后，已识别的业务应用会在这里出现。',true)}</section>${drawerSources(d)}<section class="ew-drawer-section"><div class="ew-section-heading"><h3>最近互动</h3><button class="ew-text-button" data-action="tab" data-value="interactions">全部 ${icon('arrow')}</button></div>${recentTimeline(d)}</section>`:s.tab==='interactions'?`${summaryPanel()}${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-drawer-section"><h3>互动时间线</h3>${eventResults()}</section>`:drawerModels(d)}</div></aside>`;
+      return `<div class="ew-drawer-backdrop" data-action="close-drawer"></div><aside class="ew-drawer" role="dialog" aria-modal="true" aria-label="${esc(d?.name||'设备详情')}" tabindex="-1"><header class="ew-drawer-header"><div class="ew-drawer-device-art"><svg viewBox="-60 -55 120 110" aria-hidden="true">${mascot(!d?.online)}</svg></div><div><h2>${esc(d?.name||'正在读取设备')}</h2><p><span class="ew-status ${d?.online?'':'ew-status-off'}">${d?.online?'管理连接在线':'管理连接离线'}</span> <span class="ew-muted">${taskList(d).length} 项业务任务</span></p></div><button class="ew-icon-button ew-drawer-close" data-action="close-drawer" aria-label="关闭设备详情">${icon('close')}</button></header><nav class="ew-drawer-tabs" aria-label="设备内容">${[['overview','概览'],['interactions','互动记录'],['models','模型与数据']].map(([key,label])=>`<button data-action="tab" data-value="${key}" aria-current="${s.tab===key?'page':'false'}">${label}</button>`).join('')}</nav><div class="ew-drawer-body" data-scroll-key="${esc(s.deviceId+':'+s.tab)}">${error()}${s.drawerLoading?loading('正在读取设备的小世界…'):!d?empty('没有找到这台设备','它可能已被移除，或当前账号没有访问权限。',true):s.tab==='overview'?`<div class="ew-device-note"><i class="ew-status-dot ${d.online?'':'ew-dot-muted'}"></i><span>${d.online?'管理连接在线，业务状态请查看任务记录':'管理连接离线，业务状态待确认'}<small>最近联系 ${esc(time(d.lastSeenAt))}</small></span></div><section class="ew-drawer-section"><h3>设备任务 <span>${taskList(d).length}</span></h3>${taskList(d).length?taskList(d).map(t=>`<button class="ew-drawer-task" data-action="task-tab" data-id="${esc(t.id)}"><span class="ew-task-art" data-icon="${taskIcon(t.kind)}">${icon(taskIcon(t.kind))}</span><span><strong>${esc(t.name)}</strong><small>${esc(taskRuntime(t))} · ${(t.models||[]).length} 个模型</small><small>登记状态：${esc(stateLabel(t.state))}${t.runtimeObservedAt?' · 观测 '+esc(time(t.runtimeObservedAt)):''}</small></span>${icon('arrow')}</button>${voiceTest(t)}`).join(''):empty('暂无业务任务','设备在线接入后，已识别的业务应用会在这里出现。',true)}</section>${drawerSources(d)}<section class="ew-drawer-section"><div class="ew-section-heading"><h3>最近互动</h3><button class="ew-text-button" data-action="tab" data-value="interactions">全部 ${icon('arrow')}</button></div>${recentTimeline(d)}</section>`:s.tab==='interactions'?`${summaryPanel()}${eventFilters()}${coverage(s.eventCoverage)}<section class="ew-drawer-section"><h3>互动时间线</h3>${eventResults()}</section>`:drawerModels(d)}</div></aside>`;
     }
     function previousModelName(record){const task=taskList(selected()).find(t=>String(t.id)===String(record.taskId||s.modelTaskId)),binding=task?.models?.find(m=>m.slot===record.slot&&m.packageId===record.previousPackageId);return binding?modelName(binding):items(s.models).find(m=>m.id===record.previousPackageId)?.name||record.previousPackageId;}
     function modelEffect(value){const text=typeof value==='string'?value:value.text||value.description;return ({
@@ -351,14 +430,21 @@
       saveView();
       if(!root.querySelector('[data-ew-part]'))root.innerHTML='<div data-ew-part="header"></div><div data-ew-part="content"></div><div data-ew-part="footer"></div><div data-ew-part="drawer"></div>';
       const evidenceWasOpen=root.querySelector('.ew-evidence')?.open;
+      const toolbarButton = document.activeElement?.closest('.ew-scene-toolbar button');
       const focused=document.activeElement;const focusedRef=root.contains(focused)?focused.dataset?.ref:null;const focusName=root.contains(focused)?focused?.name:null;const selection=focusName&&typeof focused.selectionStart==='number'?focused.selectionStart:null;
-      updatePart('header',header());updatePart('content',s.loading?loading():s.error&&!s.devices.length?empty('暂时还看不到这个空间','读取设备时遇到了问题。点击右上角刷新，再试一次。'):({space,tasks,interactions,library})[s.view]());
-      updatePart('footer',`<footer class="ew-footer"><span>EdgeStack<span class="ew-brand-dot">.</span> <span class="ew-muted">让边缘设备成为日常的伙伴</span></span><span class="ew-build">${window.EdgeStackDemo?'离线演示 · 所有设备与互动均为模拟数据':'状态来自已授权设备与业务事件'}</span></footer>`);updatePart('drawer',drawer());
+      updatePart('header',header());
+      if (!composingSearch) updatePart('content',s.loading?loading():s.error&&!s.devices.length?empty('暂时还看不到这个空间','读取设备时遇到了问题。点击右上角刷新，再试一次。'):({space,tasks,interactions,library})[s.view]());
+      updatePart('footer',`<footer class="ew-footer"><span>EdgeStack<span class="ew-brand-dot">.</span></span><span class="ew-build">${window.EdgeStackDemo?'离线演示 · 所有设备与互动均为模拟数据':'状态来自已授权设备与业务事件'}</span></footer>`);updatePart('drawer',drawer());
       const scene=root.querySelector('.ew-scene-scroll');if(scene){scene.scrollLeft=remembered.scene.x;scene.scrollTop=remembered.scene.y;}
       const drawerBody=root.querySelector('.ew-drawer-body');if(drawerBody)drawerBody.scrollTop=remembered.drawer[drawerBody.dataset.scrollKey]||0;
       if(activeEvidence.length)showEvidence(false,evidenceWasOpen);
       if(focusedRef&&document.activeElement!==focused){
         [...root.querySelectorAll('.ew-evidence [data-ref]')].find(q=>q.dataset.ref===focusedRef)?.focus({preventScroll:true});
+      }
+      if (toolbarButton && !toolbarButton.isConnected) {
+        const replacement = [...root.querySelectorAll('.ew-scene-toolbar button')].find(button =>
+          button.dataset.action === toolbarButton.dataset.action && button.dataset.value === toolbarButton.dataset.value);
+        replacement?.focus({preventScroll:true});
       }
       syncActivities();
       document.body.classList.toggle('edgestack-drawer-open',!!s.deviceId&&s.view!=='interactions');
@@ -516,6 +602,13 @@
       if(action==='close-drawer')return go(s.view);
       if(action==='native'){setMode(false);return;}
       if(action==='dismiss')s.error='';
+      if (action === 'reset-devices') {
+        s.filter = 'all';
+        s.query = '';
+        render();
+        root.querySelector('.ew-search input')?.focus({preventScroll:true});
+        return;
+      }
       if(action==='filter')s.filter=b.dataset.value;
       if(action==='library-layout')s.libraryLayout=b.dataset.value;
       if(action==='relations')s.relationsOpen=!s.relationsOpen;
@@ -536,7 +629,21 @@
       }
       render();
     }
-    function input(event) {if(event.target.name==='question')s.question=event.target.value;if(event.target.name==='search'){s.query=event.target.value;render();}}
+    function input(event) {
+      if (event.target.name === 'question') s.question = event.target.value;
+      if (event.target.name === 'search' && !composingSearch && !event.isComposing && s.query !== event.target.value) {
+        s.query = event.target.value;
+        render();
+      }
+    }
+    function onComposition(event) {
+      if (event.target.name !== 'search') return;
+      composingSearch = event.type === 'compositionstart';
+      if (!composingSearch) {
+        s.query = event.target.value;
+        render();
+      }
+    }
     function change(event){if(['eventPeriod','eventType','eventSession'].includes(event.target.name)){s[event.target.name]=event.target.value;resetEventFilters();return;}if(event.target.name==='period')s.period=event.target.value;if(event.target.name==='eventsDevice'){s.deviceId=event.target.value;s.eventSession='';go('interactions',s.deviceId);}}
     function keydown(event) {
       if(document.getElementById('ew-navigation')?.open||document.getElementById('ew-delivery')?.open)return;
@@ -544,7 +651,10 @@
       if(['Enter',' '].includes(event.key)&&event.target.matches('g[data-action]')){event.preventDefault();event.target.dispatchEvent(new MouseEvent('click',{bubbles:true}));}
       if(event.key==='Tab'&&s.deviceId&&s.view!=='interactions'){const drawer=root.querySelector('.ew-drawer');const nodes=[...drawer.querySelectorAll('button:not(:disabled),a,input,select,textarea,summary,[tabindex="0"]')];if(!nodes.length)return;if(!drawer.contains(document.activeElement)){event.preventDefault();nodes[0].focus();return;}if(event.shiftKey&&document.activeElement===nodes[0]){event.preventDefault();nodes.at(-1).focus();}else if(!event.shiftKey&&document.activeElement===nodes.at(-1)){event.preventDefault();nodes[0].focus();}}
     }
-    root.addEventListener('click',click);root.addEventListener('input',input);root.addEventListener('change',change);document.addEventListener('keydown',keydown);
+    root.addEventListener('click',click);root.addEventListener('input',input);
+    root.addEventListener('compositionstart',onComposition);
+    root.addEventListener('compositionend',onComposition);
+    root.addEventListener('change',change);document.addEventListener('keydown',keydown);
     if(s.view==='library'&&s.deviceId)s.tab='models';
     const deliveryHost=document.createElement('div');
     root.parentElement.append(deliveryHost);
@@ -562,12 +672,25 @@
       pollLoop();
       schedule(refreshStatusLoop,statusRefreshInterval);
     });
-    return ()=>{saveView();alive=false;delivery?.destroy();deliveryHost.remove();sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
+    return ()=>{saveView();alive=false;delivery?.destroy();deliveryHost.remove();sequence++;requests.forEach(c=>c.abort());timers.forEach(clearTimeout);root.removeEventListener('click',click);root.removeEventListener('input',input);
+      root.removeEventListener('compositionstart',onComposition);
+      root.removeEventListener('compositionend',onComposition);
+      root.removeEventListener('change',change);document.removeEventListener('keydown',keydown);document.body.classList.remove('edgestack-drawer-open');root.replaceChildren();};
   }
   function createNavigation() {
     const shell=document.createElement('div');
     shell.className='ew-menu-shell';
-    shell.innerHTML=`<button type="button" class="ew-menu-button" aria-haspopup="dialog" aria-expanded="false" aria-controls="ew-navigation">${icon('menu')}<span>菜单</span></button>
+    const details = auth?.getUserDetails();
+    const username = details?.Username || details?.username || '我';
+    shell.innerHTML=`<div class="ew-masthead">
+        <button type="button" class="ew-menu-button" title="打开菜单" aria-label="菜单" aria-haspopup="dialog" aria-expanded="false" aria-controls="ew-navigation">${icon('menu')}<span>菜单</span></button>
+        <a class="ew-home-mark" href="#!/workspace?view=space" aria-label="返回我的空间">${icon('space')}<span>EdgeStack<span class="ew-brand-dot">.</span></span></a>
+        <div class="ew-context">
+          ${window.EdgeStackDemo?'<span class="ew-demo-label"><span class="ew-demo-prefix">演示空间 · </span>模拟数据</span>':''}
+          ${isAdmin()?'<span class="ew-demo-label">管理员预览</span>':''}
+          <a class="ew-avatar" href="#!/account" aria-label="我的账号，${esc(username)}" title="${esc(username)}">${esc(Array.from(username)[0].toUpperCase())}</a>
+        </div>
+      </div>
       <dialog class="ew-menu-drawer" id="ew-navigation" aria-label="工作空间导航">
         <div data-edgestack-nav>
           <button type="button" class="ew-menu-close ew-icon-button" aria-label="关闭菜单" autofocus>${icon('close')}</button>

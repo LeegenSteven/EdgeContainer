@@ -12,7 +12,7 @@ const js=fs.readFileSync('portainer/app/edgestack/workspace.js','utf8').replaceA
 function fixture(){
  window.EdgeStackDemo=true;window.__requests=[];window.__role=new URLSearchParams(location.search).get('role')||'user';
  const registry=new Map(),transitions=[];let cleanup;
- const base=new Date('2026-11-15T07:00:00Z');
+ const base=new Date(Date.now()-30*60*1000);
  const names=['客厅的时光盒','前台小助手','书房的观察员','窗边的伙伴','工作室 · 一号','厨房小耳朵','走廊的守望者','阳台观察站'];
  const events=[{eventId:'event-1',sourceId:'voice-1',taskId:'task-1',deviceId:1,type:'voice.transcript',occurredAt:base.toISOString(),text:'帮我记住，周末给阳台的植物浇水。',sourceName:'语音助手'},{eventId:'event-2',sourceId:'camera-1',taskId:'task-2',deviceId:2,type:'camera.observation',occurredAt:new Date(+base-300000).toISOString(),text:'今天的第一位访客到了，前台已准备就绪。',sourceName:'前台观察'},{eventId:'event-3',sourceId:'voice-1',taskId:'task-1',deviceId:1,type:'voice.response',occurredAt:new Date(+base-900000).toISOString(),text:'已记好周末的小计划。希望植物们也有愉快的一天。',sourceName:'语音助手'}];
  const task=(n)=>({id:'task-'+n,deviceId:n,name:n%2?'日常语音助手':'来访观察',kind:n%2?'voice':'camera',state:'running',revision:'rev-1',models:[{slot:'main',packageId:'model-1',name:n%2?'轻语 · 日常对话':'微光 · 视觉理解',version:'1.2',state:'ready'}],dataLocations:[{name:'互动记忆',path:'/data/interactions',kind:'volume'}],capabilities:n===1?['replace-model','voice-test']:['replace-model'],voiceTestUrl:n===1?'/edgestack/voice-test.html?taskId=task-1':undefined});
@@ -82,6 +82,27 @@ const fixturePath=path.join(out,'ui-fixture.html');fs.writeFileSync(fixturePath,
     await root.locator('.ew-station').first().click();await root.locator('.ew-drawer-task').first().waitFor();await root.locator('.ew-drawer-tabs').getByRole('button',{name:'模型与数据',exact:true}).click();await root.getByRole('button',{name:'选择兼容模型'}).click();await root.locator('.ew-package').first().click();const preview=root.getByRole('region',{name:'模型替换预览'});await preview.waitFor();const copy=await preview.innerText();for(const text of ['仅更新已登记服务的镜像与已批准的模型环境参数。','重启任务；保留全部数据卷、端口、网络及其他环境参数。','收到可信的运行时回执后，才将模型标记为已加载。'])assert(copy.includes(text),text);for(const text of ['Update only','Restart the task','Wait for a trusted'])assert(!copy.includes(text),text);assert.equal(await page.evaluate(()=>window.__requests.filter(r=>r.path.endsWith('/model-changes')).length),0);assert.deepEqual(errors,[]);assert.deepEqual(external,[]);await page.screenshot({path:path.join(out,'actual-preview-effects-zh.png'),fullPage:true});const result={status:'passed',checks:['后端三条英文effects原文准确映射中文','预览没有提前提交变更'],errors,external};fs.writeFileSync(path.join(out,'preview-copy-results.json'),JSON.stringify(result,null,2));console.log(JSON.stringify(result,null,2));return;
   }
   assert.equal(await page.locator('[data-edgestack-nav] [data-view]').count(),4);assert.equal(await root.locator('.ew-station').count(),8);passed.push('普通用户完整导航与八设备空间');
+  const lookup = root.getByRole('textbox', { name: '查找设备' });
+  const offlineFilter = root.getByRole('button', { name: '离线', exact: true });
+  await offlineFilter.focus();
+  await offlineFilter.press('Enter');
+  assert.equal(await offlineFilter.getAttribute('aria-pressed'), 'true');
+  assert(await offlineFilter.evaluate(button => button === document.activeElement));
+  await lookup.focus();
+  await lookup.evaluate(input => {
+    input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
+    input.value = 'z';
+    input.dispatchEvent(new InputEvent('input', { bubbles: true, isComposing: true }));
+    if (!input.isConnected || input !== document.activeElement) throw new Error('设备搜索打断了输入法组词');
+    input.value = '不存在的设备';
+    input.dispatchEvent(new CompositionEvent('compositionend', { bubbles: true, data: input.value }));
+  });
+  await root.getByRole('button', { name: '清除筛选' }).click();
+  assert.equal(await lookup.inputValue(), '');
+  assert(await lookup.evaluate(input => input === document.activeElement));
+  assert.equal(await root.getByRole('button', { name: '全部', exact: true }).getAttribute('aria-pressed'), 'true');
+  assert.equal(await root.locator('.ew-station:visible').count(), 8);
+  passed.push('键盘筛选保留焦点，中文组词保留输入框，空结果可一步恢复全部设备');
   assert.equal(await page.evaluate(()=>window.__requests.some(r=>r.path==='summaries')),false);passed.push('小结只由用户触发');
   await page.screenshot({path:path.join(out,'space-8-desktop.png'),fullPage:true});
   await root.locator('.ew-station').first().click();await root.locator('.ew-drawer-task').first().waitFor();assert((await root.locator('.ew-drawer').innerText()).includes('日常语音助手'));passed.push('真实设备工作台可打开任务抽屉');assert((await root.getByRole('link',{name:'语音接入测试',exact:true}).getAttribute('href')).includes('/edgestack/voice-test.html?taskId=task-1'));passed.push('语音测试入口按能力声明显示且限定同源');
@@ -121,6 +142,12 @@ const fixturePath=path.join(out,'ui-fixture.html');fs.writeFileSync(fixturePath,
   const assertFullStation=async()=>{const bounds=await page.evaluate(()=>{const s=document.querySelector('.ew-station').getBoundingClientRect(),v=document.querySelector('.ew-scene-scroll').getBoundingClientRect();return {top:s.top,bottom:s.bottom,left:s.left,right:s.right,viewTop:v.top,viewBottom:v.bottom,viewLeft:v.left,viewRight:v.right};});assert(bounds.top>=bounds.viewTop-1,JSON.stringify(bounds));assert(bounds.bottom<=bounds.viewBottom+1,JSON.stringify(bounds));assert(bounds.left>=bounds.viewLeft-1,JSON.stringify(bounds));assert(bounds.right<=bounds.viewRight+1,JSON.stringify(bounds));};
   await page.goto(url+'?role=admin#!/workspace?view=space');await root.locator('.ew-station').first().waitFor();await page.setViewportSize({width:1470,height:875});await page.addStyleTag({content:'body:not(.edgestack-user) #page-wrapper{padding-left:300px}body:not(.edgestack-user) #sideview,body:not(.edgestack-user) .native-sidebar{width:300px}'});await page.evaluate(()=>window.__fixture.setDevices(1));await root.getByRole('button',{name:'刷新空间',exact:true}).click();await page.waitForFunction(()=>document.querySelectorAll('.ew-station').length===1);await assertFullStation();await page.screenshot({path:path.join(out,'single-device-admin-1470x875.png'),fullPage:true});
   await page.goto(url+'#!/workspace?view=space');await root.locator('.ew-station').first().waitFor();await page.evaluate(()=>window.__fixture.setDevices(1));await root.getByRole('button',{name:'刷新空间',exact:true}).click();await page.waitForFunction(()=>document.querySelectorAll('.ew-station').length===1);await assertFullStation();await page.screenshot({path:path.join(out,'single-device-user-1470x875.png'),fullPage:true});passed.push('1470×875普通用户与完整用户布局的管理员预览均完整显示单工位');
+  const featuredName = await root.locator('.ew-device-profile h2').innerText();
+  await root.getByRole('button', { name: '查看设备详情' }).click();
+  await root.getByRole('dialog', { name: featuredName, exact: true }).waitFor();
+  await page.keyboard.press('Escape');
+  await root.getByRole('button', { name: '查看设备详情' }).waitFor();
+  passed.push('单设备摘要与详情入口指向当前授权设备');
   await page.evaluate(()=>{const d=window.__fixture.devices()[0];d.tasks[0].state='registered';d.sources=[{id:'observer',type:'model.observer',name:'模型确认来源',enabled:true,status:'healthy'}];d.recentEvents=[];});await root.getByRole('button',{name:'刷新空间',exact:true}).click();await root.getByText('1 项任务已登记',{exact:true}).waitFor();assert(!(await root.locator('.ew-node-caption').textContent()).includes('正在提供'));assert.equal(await root.locator('.ew-activity').count(),0);assert(!(await root.innerText()).includes('一切安好'));await root.locator('.ew-station').first().click();await root.locator('.ew-drawer').getByText('管理连接在线',{exact:true}).waitFor();await page.screenshot({path:path.join(out,'registered-task-management-only.png'),fullPage:true});passed.push('已登记任务与管理在线均不暗示业务运行或健康');
 
 
