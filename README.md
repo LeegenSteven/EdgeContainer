@@ -1,5 +1,7 @@
 # EdgeStack
 
+观看手机、管理员和普通用户的带章节操作视频，或下载离线交互包，从各自的登录页体验完整流程。[手机 MP4](https://github.com/LeegenSteven/EdgeContainer/releases/download/demo-2026-11-23/edgestack-mobile.mp4) · [管理员 MP4](https://github.com/LeegenSteven/EdgeContainer/releases/download/demo-2026-11-23/edgestack-admin.mp4) · [用户 MP4](https://github.com/LeegenSteven/EdgeContainer/releases/download/demo-2026-11-23/edgestack-user.mp4) · [交互包与发布说明](https://github.com/LeegenSteven/EdgeContainer/releases/tag/demo-2026-11-23)
+
 基于 Portainer CE 的端侧设备管理与用户可视化工作台，保留原有 `portainer/`、`agent/` 源码及许可证。
 
 普通用户通过浅色 2.5D 设备空间查看授权设备、业务任务、模型、数据位置和交互记录，按需生成带事件引用的总结，并更换管理员已发布的兼容模型。管理员默认进入原生完整管理界面，可显式预览用户视图。

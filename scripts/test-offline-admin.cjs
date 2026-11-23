@@ -6,6 +6,7 @@ const assert = require('node:assert/strict');
 const { createHash } = require('node:crypto');
 const { pathToFileURL } = require('node:url');
 const { chromium } = require('playwright');
+const { signInIfNeeded } = require('./demo-login.cjs');
 
 if (!process.argv[2]) {
   console.error('Usage: node scripts/test-offline-admin.cjs DELIVERED_HTML [REPORT_DIRECTORY] [--peer-html OTHER_DELIVERED_HTML]');
@@ -74,12 +75,14 @@ const sections = [
   }
   async function persona(value, target = page) {
     await collectRequests(target);
+    await signInIfNeeded(target);
     if (!(await target.locator('#demo-panel').isVisible())) await target.locator('#demo-toggle').click();
     await Promise.all([
       target.waitForEvent('load'),
       target.locator(`[data-persona="${value}"]`).click(),
     ]);
     await target.waitForFunction(() => Boolean(window.EdgeStackDemo));
+    await signInIfNeeded(target);
     await (value === 'admin' ? target.locator('[data-cy="portainerSidebar-home"]') : target.locator('.ew-station').first()).waitFor();
   }
   async function reset(target = page) {
@@ -89,6 +92,7 @@ const sections = [
     await Promise.all([target.waitForEvent('load'), target.locator('#demo-reset').click()]);
     await target.waitForFunction(() => Boolean(window.EdgeStackDemo));
     const current = await target.evaluate(() => window.EdgeStackDemo.getState().demoPersona);
+    await signInIfNeeded(target);
     await (current === 'admin' ? target.locator('[data-cy="portainerSidebar-home"]') : target.locator('.ew-station').first()).waitFor();
   }
   async function noStoredSecrets(values) {
@@ -303,6 +307,7 @@ const sections = [
       peer = await context.newPage();
       watch(peer);
       await peer.goto(pathToFileURL(peerInput).href, { waitUntil: 'load' });
+      await signInIfNeeded(peer);
       await peer.waitForFunction(() => Boolean(window.EdgeStackDemo));
       const ownConfig = await page.evaluate(() => window.__EDGESTACK_DEMO_CONFIG__);
       const peerConfig = await peer.evaluate(() => window.__EDGESTACK_DEMO_CONFIG__);

@@ -28,7 +28,7 @@ def safe_script(code):
     return re.sub(r'</script', r'<\\/script', code, flags=re.I)
 
 
-def build(public, output, persona='user', frontend_commit=None):
+def build(public, output, persona='user', frontend_commit=None, start_at_login=False):
     if persona not in ('user', 'admin'):
         raise ValueError('Demo persona must be user or admin.')
     html = (public / 'index.html').read_text()
@@ -88,9 +88,11 @@ def build(public, output, persona='user', frontend_commit=None):
     icon = assets['edgestack-icon.svg']
     html = re.sub(r'<link\b[^>]*\brel="icon"[^>]*>', '<link rel="icon" href="' + icon + '">', html)
     html = re.sub(r'<meta\s+name="msapplication-config"[^>]*>', '', html)
-    csp = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'unsafe-inline' blob: data:; img-src blob: data:; font-src blob: data:; connect-src 'none'; worker-src blob: data:; frame-src blob: data:; base-uri file:; form-action 'none'"
+    csp = "default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' blob: data:; style-src 'unsafe-inline' blob: data:; img-src blob: data:; font-src blob: data:; connect-src 'none'; worker-src blob: data:; frame-src blob: data:; base-uri 'self' file:; form-action 'none'"
     simulator_names = ['business-fixture.js', 'admin-fixture.js', 'delivery-fixture.js', 'demo-runtime.js', 'demo.css']
     demo_config = {'defaultPersona': persona, 'storageKey': 'edgestack.conference.v3.' + persona}
+    if start_at_login:
+        demo_config.update(startAtLogin=True, storageKey='edgestack.conference.login.v1.' + persona)
     boot = (
         '<meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="' + csp + '">'
         '<style>\n' + (ROOT / 'demo/conference/demo.css').read_text() + '\n</style>'
@@ -112,6 +114,7 @@ def build(public, output, persona='user', frontend_commit=None):
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(html)
     info = {'file': output.name, 'size_bytes': output.stat().st_size, 'sha256': hashlib.sha256(output.read_bytes()).hexdigest(), 'built_at_utc': datetime.now(timezone.utc).isoformat(), 'upstream': 'Portainer CE 2.45.3', 'source_overlay_version': overlay_version, 'source_native_main': next((name for name in scripts if re.fullmatch(r'main\.[a-f0-9]+\.js', name)), None), 'frontend_source_commit': frontend_commit, 'source_public_index_sha256': source_index_sha256, 'offline': True, 'business_fixture': {'schema': 2, 'admin_schema': 1, 'records': 'fictional local conference fixtures', 'summary_provider': 'local example; no DeepSeek cloud call', 'default_persona': persona, 'storage_key': demo_config['storageKey']}, 'simulator_sources_sha256': {name: hashlib.sha256((ROOT / 'demo/conference' / name).read_bytes()).hexdigest() for name in simulator_names}, 'public_source_sha256': hashes}
+    info['business_fixture']['start_at_login'] = start_at_login
     print(json.dumps({k: v for k, v in info.items() if k != 'public_source_sha256'}, ensure_ascii=False, indent=2))
     (output.parent / '演示构建记录.json').write_text(json.dumps(info, ensure_ascii=False, indent=2) + '\n')
 
@@ -122,5 +125,6 @@ if __name__ == '__main__':
     p.add_argument('--output', type=Path, required=True)
     p.add_argument('--persona', choices=['user', 'admin'], default='user', help='Initial role and isolated local storage namespace.')
     p.add_argument('--frontend-commit', help='Optional source commit for the compiled production frontend.')
+    p.add_argument('--login', action='store_true', help='Start at the native sign-in form with fictional demo credentials.')
     args = p.parse_args()
-    build(args.public, args.output, args.persona, args.frontend_commit)
+    build(args.public, args.output, args.persona, args.frontend_commit, args.login)

@@ -1,6 +1,10 @@
 # EdgeStack 单文件会议演示
 
-本目录保存会议演示源码。单文件 HTML、ZIP、交互文档和构建记录保留在本地 `deliverables/`，不提交到 GitHub。生成的 HTML 内嵌现部署的 Portainer CE 2.45.3 前端、EdgeStack 中文覆盖层、图标字体和本地模拟响应，直接通过 `file://` 打开。线上 Server 和 Worker 配置不参与演示状态读写。
+本目录保存会议演示源码。手机、管理员和普通用户的操作视频与交互包通过 GitHub Releases 分发，本地副本位于 `deliverables/`。单文件 HTML 内嵌 Portainer CE 2.45.3 前端、EdgeStack 中文界面和模拟响应，可直接通过浏览器打开。[下载 2026-11-23 演示](https://github.com/LeegenSteven/EdgeContainer/releases/tag/demo-2026-11-23)
+
+发布包使用 `--login` 构建。管理员入口预填 `admin`，用户和手机入口预填 `viewer`，演示密码均为 `demo`。提交原生登录表单后进入相应工作区。两份角色文件分别保存模拟数据。要在同一组模拟数据中查看申请与管理员回复，可以通过右下角的「会议演示」切换到另一角色的登录页。
+
+手机入口 `mobile/index.html` 在手机浏览器打开用户端，在宽屏显示 390 像素的交互预览。打包时将 `release-index.html` 作为根目录的 `index.html`，将 `mobile-preview.html` 复制到 `mobile/index.html`，并将用户端与管理员端分别输出为 `user/edgestack-user.html` 和 `admin/edgestack-admin.html`。下面两个构建命令省略 `--login` 时，适用于跳过登录的会议现场演示。
 
 `demo-runtime.js` 提供设备/资源状态、模拟 HTTP 与 WebSocket、持久化、会议控制和下载。`business-fixture.js` 与 `admin-fixture.js` 共用业务示例，分别支持用户工作台和七个管理员业务页面。浏览器的 `connect-src 'none'` 限制与模拟传输层共同保证演示离线运行。原生前端组件提供页面、表单、表格、编辑器、权限提示和弹窗，商业功能保留 CE 入口行为。
 

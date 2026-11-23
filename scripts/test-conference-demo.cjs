@@ -1,5 +1,6 @@
 // Exercises the self-contained file in a fresh, offline browser profile.
 const { chromium } = require('playwright');
+const { signInIfNeeded } = require('./demo-login.cjs');
 const fs = require('node:fs');
 const path = require('node:path');
 const { pathToFileURL } = require('node:url');
@@ -22,6 +23,7 @@ const assert = require('node:assert/strict');
   fs.mkdirSync(output, { recursive: true });
   try {
     await page.goto(pathToFileURL(file).href, { waitUntil: 'load', timeout: 30000 });
+    await signInIfNeeded(page);
     await page.waitForTimeout(3000);
     const body = await page.locator('body').innerText();
     const requests = await page.evaluate(() => window.EdgeStackDemo?.requests || []);
@@ -115,7 +117,7 @@ const assert = require('node:assert/strict');
       await page.evaluate(()=>{const db=window.EdgeStackDemo.getState(),d=db.demoBusiness.devices[0],t=d.tasks[0],stamp=new Date().toISOString();db.demoBusiness.events=[{eventId:'demo-user-check',deviceId:d.id,taskId:t.id,type:'voice.user_utterance',phase:'final',text:'测试用户输入',occurredAt:stamp,receivedAt:stamp},{eventId:'demo-assistant-check',deviceId:d.id,taskId:t.id,type:'voice.assistant_reply',phase:'generated',text:'回声测试回复：测试用户输入',provenance:{kind:'integration_test'},occurredAt:stamp,receivedAt:stamp},...['tts_requested','synthesis_complete','playing','played','interrupted'].map((phase,i)=>({eventId:'demo-phase-'+i,deviceId:d.id,taskId:t.id,type:'voice.playback_state',phase,text:'',provenance:{kind:'integration_test'},occurredAt:stamp,receivedAt:stamp}))];localStorage.setItem(window.EdgeStackDemo.storageKey || 'edgestack.conference.v1',JSON.stringify(db));location.hash='#!/workspace?view=space';});await page.reload();await workspace.locator('.ew-station').first().waitFor();await workspace.locator('.ew-station').first().click();await workspace.locator('.ew-drawer-tabs').getByRole('button',{name:'互动记录',exact:true}).click();await workspace.locator('.ew-drawer .ew-timeline').waitFor();const timeline=await workspace.locator('.ew-drawer').innerText();for(const label of ['用户说','设备回复','生成','请求合成','合成完成','正在播放','播放结束','播放中断','接入测试'])assert(timeline.includes(label),label);await page.screenshot({path:path.join(output,'final-offline-event-phases.png'),fullPage:true});userFlows.push('模拟新事件触发有限时提示，真实事件类型与播放阶段中文、接入测试单独标识');
       await page.evaluate(value=>{localStorage.setItem(window.EdgeStackDemo.storageKey || 'edgestack.conference.v1',value);location.hash='#!/workspace?view=space';},baseline);await page.reload();await workspace.locator('.ew-station').first().waitFor();
     }
-    const switchPersona=async(persona)=>{await page.locator('#demo-toggle').click();await Promise.all([page.waitForEvent('load'),page.locator('[data-persona="'+persona+'"]').click()]);await page.waitForFunction(p=>window.EdgeStackDemo?.getState().demoPersona===p,persona);};
+    const switchPersona=async(persona)=>{await page.locator('#demo-toggle').click();await Promise.all([page.waitForEvent('load'),page.locator('[data-persona="'+persona+'"]').click()]);await signInIfNeeded(page);await page.waitForFunction(p=>window.EdgeStackDemo?.getState().demoPersona===p,persona);};
     await switchPersona('admin');await page.waitForFunction(()=>!!window.EdgeStackWorkspace);await page.getByRole('heading',{name:'首页',exact:true}).waitFor();assert.equal(await page.locator('[data-edgestack-nav]').count(),0);userFlows.push('明确切换至原管理员后台并保留菜单');
     await page.screenshot({path:path.join(output,'admin-offline.png'),fullPage:true});
     fs.writeFileSync(path.join(output,'workspace-flows.json'),JSON.stringify({status:'passed',passed:userFlows,errors,external},null,2));
@@ -256,7 +258,8 @@ const assert = require('node:assert/strict');
       page.once('dialog', (dialog) => dialog.accept());
       await Promise.all([page.waitForEvent('load'), page.locator('#demo-reset').click()]);
       await page.waitForFunction(() => window.EdgeStackDemo?.getState().containers.length === 11);
-      await page.getByRole('heading', { name: '主机概览', exact: true }).or(page.getByRole('heading', { name: '我的空间.', exact: true })).waitFor();
+      await signInIfNeeded(page);
+      await page.getByRole('heading', { name: '主机概览', exact: true }).or(page.getByRole('heading', { name: /^我的空间/ })).waitFor();
       assert.equal(await page.evaluate(() => window.EdgeStackDemo.getState().edge_groups.length), 1);
       passed.push('一键恢复初始演示数据');
       if (await page.getByRole('button',{name:'菜单',exact:true}).isVisible()) {
@@ -267,7 +270,7 @@ const assert = require('node:assert/strict');
       await page.locator('#username').waitFor();
       await page.locator('#username').fill('admin');
       await page.locator('#password').fill('demo');
-      await page.getByRole('button', { name: '登录', exact: true }).click();
+      await page.locator('[data-cy="auth-loginButton"]').click();
       await page.waitForFunction(() => window.EdgeStackDemo.getState().loggedIn);
       await page.getByRole('heading', { name: '首页', exact: true }).or(page.getByRole('heading', { name: '我的空间.', exact: true })).waitFor();
       passed.push('原生退出和演示账户重新登录');

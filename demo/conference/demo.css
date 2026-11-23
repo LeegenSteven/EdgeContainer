@@ -24,3 +24,6 @@
 @media print{#demo-tools{display:none}}
 
 #demo-panel{max-height:calc(100vh - 85px);overflow:auto}
+html[data-demo-signed-out] #demo-tools{display:none}
+.demo-login-hint{margin:12px 0 0;text-align:center;font:500 13px/1.6 -apple-system,BlinkMacSystemFont,"PingFang SC",sans-serif;color:inherit}
+@media(max-width:480px){#demo-tools{right:10px;bottom:max(10px,env(safe-area-inset-bottom))}#demo-panel{width:min(310px,calc(100vw - 20px));box-sizing:border-box}}

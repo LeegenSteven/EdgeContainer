@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="zh-CN">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>EdgeStack 演示入口</title>
+<style>
+  :root { font: 100%/1.6 system-ui, sans-serif; color: #283b31; background: #fafbf8; }
+  body { max-width: 38rem; margin: 10vh auto; padding: 0 1.25rem; }
+  h1 { font-size: clamp(1.75rem, 5vw, 2.25rem); line-height: 1.2; }
+  p { color: #495b4e; }
+  ul { list-style: none; padding: 0; margin: 2rem 0; border-block-start: 1px solid #c8d2c7; }
+  li { border-block-end: 1px solid #c8d2c7; }
+  a { display: block; padding: .85rem .4rem; color: #245439; font-weight: 650; }
+  a:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+  small { display: block; color: #495b4e; font-weight: 400; }
+</style>
+<main>
+  <h1>EdgeStack 演示入口</h1>
+  <p>选择一个入口，用预填账号登录。设备、互动、镜像构建和部署结果均在浏览器内模拟。</p>
+  <nav aria-label="演示入口">
+    <ul>
+      <li><a href="mobile/index.html">手机演示<small>触屏设备列表、任务与互动记录</small></a></li>
+      <li><a href="admin/edgestack-admin.html">管理员登录与功能演示<small>环境与容器、业务授权、模型发布和审计</small></a></li>
+      <li><a href="user/edgestack-user.html">用户登录与功能演示<small>设备空间、互动小结、模型申请与部署</small></a></li>
+    </ul>
+  </nav>
+  <p>管理员账号 <code>admin</code>，普通用户账号 <code>viewer</code>，演示密码均为 <code>demo</code>。可在右下角「会议演示」中恢复初始数据。</p>
+</main>
+</html>

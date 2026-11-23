@@ -5,6 +5,11 @@
   'use strict';
   const config = window.__EDGESTACK_DEMO_CONFIG__ || {};
   const defaultPersona = config.defaultPersona === 'admin' ? 'admin' : 'user';
+  const loginEntry = config.startAtLogin === true;
+  const loginHash = persona => persona === 'admin' ? '#!/auth?portal=admin' : '#!/auth';
+  const homeHash = persona => persona === 'admin' ? '#!/home' : '#!/workspace?view=space';
+  const demoUsername = persona => persona === 'admin' ? 'admin' : 'viewer';
+  const demoPassword = 'demo';
   const KEY = config.storageKey || 'edgestack.conference.v1';
   const clone = (x) => JSON.parse(JSON.stringify(x));
   const now = () => Math.floor(Date.now() / 1000);
@@ -84,7 +89,7 @@
     const networks = ['bridge', 'host', 'none', 'edge_acceptance_default', 'edgestack-agent-mgmt', 'ovs-rk3588_default'].map((name, i) => ({ Id: hex(300 + i), Name: name, Created: iso(), Scope: 'local', Driver: name === 'host' ? 'host' : name === 'none' ? 'null' : 'bridge', EnableIPv4: true, EnableIPv6: false, IPAM: { Driver: 'default', Options: {}, Config: [{ Subnet: `172.${17 + i}.0.0/16`, Gateway: `172.${17 + i}.0.1` }] }, Internal: false, Attachable: false, Ingress: false, ConfigFrom: { Network: '' }, ConfigOnly: false, Containers: {}, Options: {}, Labels: name.includes('_') ? { 'com.docker.compose.project': name.split('_')[0] } : {}, Portainer: { ResourceControl: { ...rc(hex(300 + i), 5), System: i < 3, Public: i < 3 } } }));
     const volumes = ['edgestack_agent_data', 'ovs-rk3588_speech-data', 'ovs-profile_speech-data'].map((name) => ({ Name: name, Driver: 'local', Mountpoint: '/userdata/docker/volumes/' + name + '/_data', CreatedAt: iso(), Status: {}, Labels: { 'com.docker.compose.project': name.split('_')[0] }, Scope: 'local', Options: {}, UsageData: { Size: 10485760, RefCount: 1 }, Portainer: { ResourceControl: rc(name, 2) } }));
     const compose = 'services:\n  whoami:\n    image: traefik/whoami:v1.10.3\n    command: ["--port=8080", "--verbose"]\n    ports:\n      - "18080:8080"\n    restart: unless-stopped\n';
-    return { schema: 1, loggedIn: true, serverOnline: true, boardOnline: true, cpu: 18, memory: 31,
+    return { schema: 1, loggedIn: !loginEntry, serverOnline: true, boardOnline: true, cpu: 18, memory: 31,
       settings, environments: [environment], containers, images, networks, volumes, compose,
       users: [{ Id: 1, Username: 'admin', Role: 1, EndpointAuthorizations: {}, PortainerAuthorizations: {}, UseCache: true, ThemeSettings: { color: 'dark' }, GitCredentials: [], OpenAMTConfiguration: {}, EdgeGroups: [], RoleName: 'Administrator' }],
       teams: [{ Id: 1, Name: '研发团队' }], memberships: [{ Id: 1, UserID: 1, TeamID: 1, Role: 1 }], tags: [],
@@ -100,7 +105,22 @@
   let db;
   try { db = JSON.parse(localStorage.getItem(KEY)); } catch { /* local file storage may be unavailable */ }
   if (!db || db.schema !== 1) db = seed();
-  function save() { try { localStorage.setItem(KEY, JSON.stringify(db)); } catch { /* in-memory session remains usable */ } }
+  if (loginEntry && (!location.hash || location.hash === '#')) {
+    db.loggedIn = false;
+    db.demoPersona = defaultPersona;
+  }
+  function markSession() {
+    document.documentElement.toggleAttribute('data-demo-signed-out', loginEntry && !db.loggedIn);
+  }
+  markSession();
+  function persist(state) { try { localStorage.setItem(KEY, JSON.stringify(state)); } catch { /* in-memory session remains usable */ } }
+  function save() { persist(db); }
+  function restartAt(state, hash) {
+    persist(state);
+    // Leave in-flight requests on the outgoing page in their original session.
+    history.replaceState(null, '', hash);
+    location.reload();
+  }
   const business=window.EdgeStackDemoBusiness.create({db,save,audit,jsonResponse});
   if(!db.demoPersona)db.demoPersona=defaultPersona;
   if(!db.users.some(u=>u.Id===10001))db.users.push({...clone(db.users[0]),Id:10001,Username:'空间体验者',Role:2,RoleName:'Standard User',ThemeSettings:{color:'light'}});
@@ -317,6 +337,27 @@
     else if (path.startsWith('/api')) path = path.slice(4);
     if (path.includes('/locales/')) return jsonResponse({});
     if (!path.startsWith('/')) path = '/' + path;
+    if (path === '/auth/logout') {
+      db.loggedIn = false;
+      markSession();
+      save();
+      return jsonResponse(null, 204);
+    }
+    if (path === '/auth' && method === 'POST') {
+      const username = body.Username || body.username;
+      const persona = username === 'admin' ? 'admin' : 'user';
+      if (loginEntry && (username !== demoUsername(persona) || (body.Password || body.password) !== demoPassword)) {
+        return jsonResponse({ message: '请使用页面所示的演示账号和密码。' }, 422);
+      }
+      db.demoPersona = persona;
+      db.loggedIn = true;
+      markSession();
+      save();
+      return jsonResponse({ jwt: 'DEMO_OFFLINE_SESSION' });
+    }
+    if (loginEntry && !db.loggedIn && !['/settings/public', '/users/admin/check', '/status', '/system/status', '/motd', '/system/version', '/version'].includes(path)) {
+      return jsonResponse({ message: '请先登录演示账号。' }, 401);
+    }
     const deliveryResponse=delivery.route(method,path,q,body);if(deliveryResponse)return deliveryResponse;
     const adminResponse=admin.route(method,path,q,body);if(adminResponse)return adminResponse;
     const businessResponse=business.route(method,path,q,body);if(businessResponse)return businessResponse;
@@ -331,8 +372,6 @@
     if (path === '/settings' || path === '/settings/public') { if (method !== 'GET') { Object.assign(db.settings, body); audit('保存设置', '中枢 Server'); } return jsonResponse(db.settings); }
     if (path === '/settings/ssl' || path === '/ssl') return method === 'GET' ? jsonResponse({ CertPath: '', KeyPath: '', HTTPEnabled: true, HTTPSOnly: false, SSLCertPath: '', SSLKeyPath: '' }) : jsonResponse({});
     if (path === '/settings/experimental') return jsonResponse({});
-    if (path === '/auth/logout') { db.loggedIn = false; save(); return jsonResponse(null, 204); }
-    if (path === '/auth') { db.demoPersona=(body.Username||body.username)==='admin'?'admin':'user'; db.loggedIn = true; save(); return jsonResponse({ jwt: 'DEMO_OFFLINE_SESSION' }); }
     if (path === '/users/admin/check') return jsonResponse(null, 204);
     if (path === '/users/me') return db.loggedIn ? jsonResponse(currentUser()) : jsonResponse({ message: '演示账户已退出，请用 viewer / demo 或 admin / demo 重新登录。' }, 401);
     if (/^\/users\/\d+\/memberships$/.test(path)) return jsonResponse(db.memberships);
@@ -470,7 +509,27 @@
       if (old !== next) nativeSetAttr.call(el, attr, next);
     }
   }
-  new MutationObserver((records) => { for (const r of records) for (const n of r.addedNodes) remap(n); }).observe(document.documentElement, { subtree: true, childList: true });
+  function prepareLoginForm() {
+    if (!loginEntry || db.loggedIn) return;
+    const username = document.querySelector('[data-cy="auth-usernameInput"]');
+    const password = username?.form?.querySelector('[data-cy="auth-passwordInput"]');
+    if (!password || username.form.querySelector('.demo-login-hint')) return;
+    const name = demoUsername(username.form.classList.contains('simple-box-form') ? 'admin' : 'user');
+    const hint = document.createElement('p');
+    hint.className = 'demo-login-hint';
+    hint.textContent = '本地演示账号 ' + name + ' · 密码 ' + demoPassword;
+    username.form.append(hint);
+    for (const [field, value] of [[username, name], [password, demoPassword]]) {
+      if (!field.value) {
+        field.value = value;
+        field.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+    }
+  }
+  new MutationObserver(records => {
+    for (const record of records) for (const node of record.addedNodes) remap(node);
+    prepareLoginForm();
+  }).observe(document.documentElement, { subtree: true, childList: true });
 
   class LocalXHR extends EventTarget {
     constructor() { super(); this.readyState = 0; this.status = 0; this.statusText = ''; this.responseText = ''; this.response = null; this.responseType = ''; this.timeout = 0; this.withCredentials = false; this.upload = new EventTarget(); this._headers = {}; this._aborted = false; }
@@ -554,7 +613,12 @@
     const cpu = box.querySelector('#demo-cpu'); cpu.value = db.cpu;
     const output = box.querySelector('#demo-cpu-value'); output.value = db.cpu + '%';
     cpu.oninput = () => { db.cpu = +cpu.value; output.value = db.cpu + '%'; save(); };
-    box.querySelectorAll('[data-persona]').forEach(b=>{b.onclick=()=>{db.demoPersona=b.dataset.persona;db.loggedIn=true;save();location.hash=db.demoPersona==='admin'?'#!/home':'#!/workspace?view=space';location.reload();};});
+    box.querySelectorAll('[data-persona]').forEach(button => {
+      button.onclick = () => {
+        const persona = button.dataset.persona;
+        restartAt({ ...db, demoPersona: persona, loggedIn: !loginEntry }, loginEntry ? loginHash(persona) : homeHash(persona));
+      };
+    });
     box.querySelectorAll('[data-route]').forEach((b) => { b.onclick = () => { location.hash = '#!' + b.dataset.route; close(); }; });
     box.querySelector('#demo-voice-event').onclick=()=>{business.emitDemoEvent('voice');close();};box.querySelector('#demo-camera-event').onclick=()=>{business.emitDemoEvent('camera');close();};
     box.querySelector('#demo-help').onclick = () => showHelp('本地交互文档');
@@ -564,12 +628,13 @@
     document.addEventListener('keydown', (e) => { if (e.key === 'Escape') { close(); document.getElementById('demo-info')?.remove(); } });
   }
   function reset() {
-    try { for (const key of Object.keys(localStorage)) if (key === KEY || key.startsWith('portainer.')) localStorage.removeItem(key); } catch {}
-    db=seed();db.demoPersona=defaultPersona;db.demoBusiness=window.EdgeStackDemoBusiness.seed();save();
-    location.hash=defaultPersona==='admin'?'#!/home':'#!/workspace?view=space';location.reload();
+    try { for (const key of Object.keys(localStorage)) if (key === KEY || (!loginEntry && key.startsWith('portainer.'))) localStorage.removeItem(key); } catch {}
+    const initial = { ...seed(), demoPersona: defaultPersona, demoBusiness: window.EdgeStackDemoBusiness.seed() };
+    restartAt(initial, loginEntry ? loginHash(defaultPersona) : homeHash(defaultPersona));
   }
   window.EdgeStackDemo = { version:3, fixture:true, storageKey:KEY, defaultPersona, emitDemoEvent:business.emitDemoEvent, requests, getState:()=>clone(db), reset, route };
-  if (!location.hash || location.hash === '#') location.hash=defaultPersona==='admin'?'#!/home':'#!/workspace?view=space';
+  if (loginEntry && !db.loggedIn && !location.hash.startsWith('#!/auth')) location.hash = loginHash(defaultPersona);
+  else if (!location.hash || location.hash === '#') location.hash = homeHash(defaultPersona);
   document.documentElement.lang = 'zh-CN';
   if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', controls, { once: true }); else controls();
   setInterval(() => { if (db.boardOnline) db.environments.forEach((e) => { e.LastCheckInDate = now(); e.Heartbeat = true; }); }, 5000);
